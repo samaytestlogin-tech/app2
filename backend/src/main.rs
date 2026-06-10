@@ -188,9 +188,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     db.get_or_create_room(&payload.room_tag).ok();
 
-                    let updated_ids = db
-                        .update_messages_status_in_room(&payload.room_tag, &payload.user_id, "seen")
-                        .unwrap_or_default();
+                    let updated_ids = match db.update_messages_status_in_room(&payload.room_tag, "seen", &payload.user_id) {
+                        Ok(ids) => ids,
+                        Err(e) => {
+                            eprintln!("Error updating messages status to seen in room {}: {:?}", payload.room_tag, e);
+                            Vec::new()
+                        }
+                    };
 
                     socket.emit("room_history", &history_payload(&db, &payload.room_tag)).ok();
 
@@ -292,8 +296,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let updated_ids = db
                             .update_messages_status_in_room(
                                 &payload.room_tag,
-                                &payload.user_id,
                                 "seen",
+                                &payload.user_id,
                             )
                             .unwrap_or_default();
 
@@ -403,7 +407,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             socket.on("get_direct_history", move |socket: SocketRef, Data(payload): Data<JoinDirectChatPayload>| {
                 let db = db_for_dm_hist.clone();
                 async move {
-                    let history = db.get_direct_messages(&payload.sender_tag, &payload.receiver_tag, 100).unwrap_or_default();
+                    let history = match db.get_direct_messages(&payload.sender_tag, &payload.receiver_tag, 100) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            eprintln!("Error getting direct messages between {} and {}: {:?}", payload.sender_tag, payload.receiver_tag, e);
+                            Vec::new()
+                        }
+                    };
                     socket.emit("direct_history", &history).ok();
                 }
             });
@@ -465,7 +475,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     if !viewer_tag.is_empty() {
-                        let statuses = db.get_active_statuses(&viewer_tag, 86_400_000).unwrap_or_default();
+                        let statuses = match db.get_active_statuses(&viewer_tag, 86_400_000) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                eprintln!("Error getting active statuses for viewer {}: {:?}", viewer_tag, e);
+                                Vec::new()
+                            }
+                        };
                         socket.emit("statuses_list", &statuses).ok();
                     } else {
                         socket.emit("statuses_list", &Vec::<db::UserStatus>::new()).ok();
@@ -614,7 +630,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 // Axum REST & Helper Functions
 // ----------------------------------------------------
 fn history_payload(db: &db::Db, room_tag: &str) -> Vec<db::Message> {
-    db.get_messages(room_tag, 100).unwrap_or_default()
+    match db.get_messages(room_tag, 100) {
+        Ok(msgs) => msgs,
+        Err(e) => {
+            eprintln!("Error getting messages for room {}: {:?}", room_tag, e);
+            Vec::new()
+        }
+    }
 }
 
 async fn get_tags(State(state): State<AppState>) -> Result<Json<Vec<db::DbRoom>>, StatusCode> {

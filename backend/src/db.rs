@@ -316,48 +316,169 @@ impl Db {
             }
         }
 
+        // 4. Create Indexes
+        println!("Provisioning database indexes...");
+        
+        // Collection: messages
+        let _ = self.create_index(
+            "messages",
+            "room_tag_timestamp_idx",
+            "key",
+            vec!["room_tag", "timestamp"],
+            Some(vec!["ASC", "DESC"])
+        ).await;
+
+        // Collection: direct_messages
+        let _ = self.create_index(
+            "direct_messages",
+            "sender_receiver_timestamp_idx",
+            "key",
+            vec!["sender_tag", "receiver_tag", "timestamp"],
+            Some(vec!["ASC", "ASC", "DESC"])
+        ).await;
+
+        let _ = self.create_index(
+            "direct_messages",
+            "receiver_sender_timestamp_idx",
+            "key",
+            vec!["receiver_tag", "sender_tag", "timestamp"],
+            Some(vec!["ASC", "ASC", "DESC"])
+        ).await;
+
+        let _ = self.create_index(
+            "direct_messages",
+            "sender_tag_idx",
+            "key",
+            vec!["sender_tag"],
+            None
+        ).await;
+
+        let _ = self.create_index(
+            "direct_messages",
+            "receiver_tag_idx",
+            "key",
+            vec!["receiver_tag"],
+            None
+        ).await;
+
+        // Collection: status_permissions
+        let _ = self.create_index(
+            "status_permissions",
+            "viewer_allowed_idx",
+            "key",
+            vec!["viewer_tag", "allowed"],
+            None
+        ).await;
+
+        let _ = self.create_index(
+            "status_permissions",
+            "user_tag_idx",
+            "key",
+            vec!["user_tag"],
+            None
+        ).await;
+
         Ok(())
     }
 
-    pub async fn list_databases(&self) -> std::result::Result<serde_json::Value, reqwest::Error> {
+    async fn create_index(&self, collection: &str, key: &str, index_type: &str, attributes: Vec<&str>, orders: Option<Vec<&str>>) -> Result<()> {
+        let url = format!("{}/databases/{}/collections/{}/indexes", self.endpoint, self.database_id, collection);
+        let mut body = json!({
+            "key": key,
+            "type": index_type,
+            "attributes": attributes,
+        });
+        if let Some(ord) = orders {
+            body["orders"] = json!(ord);
+        }
+
+        // Retry up to 5 times if attribute is still processing
+        for attempt in 1..=5 {
+            let res = self.client.post(&url)
+                .header("X-Appwrite-Project", &self.project_id)
+                .header("X-Appwrite-Key", &self.api_key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(map_err)?;
+            let status = res.status();
+            if status.is_success() || status == 409 {
+                if status.is_success() {
+                    println!("Index {} created successfully in collection {}.", key, collection);
+                } else {
+                    println!("Index {} already exists in collection {}.", key, collection);
+                }
+                return Ok(());
+            }
+
+            let body_text = res.text().await.unwrap_or_default();
+            println!("Attempt {} to create index {} in {} failed: status {}, body {}", attempt, key, collection, status, body_text);
+            if attempt < 5 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn list_databases(&self) -> Result<serde_json::Value> {
         let url = format!("{}/databases", self.endpoint);
         let res = self.client.get(&url)
             .header("X-Appwrite-Project", &self.project_id)
             .header("X-Appwrite-Key", &self.api_key)
             .send()
-            .await?;
-        let val = res.json::<serde_json::Value>().await?;
+            .await
+            .map_err(map_err)?;
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await.unwrap_or_default();
+            println!("Error list_databases: status {}, body {}", status, body);
+            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError(format!("list_databases failed: {}", body)))));
+        }
+        let val = res.json::<serde_json::Value>().await.map_err(map_err)?;
         Ok(val)
     }
 
-    pub async fn list_buckets(&self) -> std::result::Result<serde_json::Value, reqwest::Error> {
+    pub async fn list_buckets(&self) -> Result<serde_json::Value> {
         let url = format!("{}/storage/buckets", self.endpoint);
         let res = self.client.get(&url)
             .header("X-Appwrite-Project", &self.project_id)
             .header("X-Appwrite-Key", &self.api_key)
             .send()
-            .await?;
-        let val = res.json::<serde_json::Value>().await?;
+            .await
+            .map_err(map_err)?;
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await.unwrap_or_default();
+            println!("Error list_buckets: status {}, body {}", status, body);
+            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError(format!("list_buckets failed: {}", body)))));
+        }
+        let val = res.json::<serde_json::Value>().await.map_err(map_err)?;
         Ok(val)
     }
 
-    async fn get_document(&self, collection: &str, doc_id: &str) -> std::result::Result<Option<serde_json::Value>, reqwest::Error> {
+    async fn get_document(&self, collection: &str, doc_id: &str) -> Result<Option<serde_json::Value>> {
         let url = format!("{}/databases/{}/collections/{}/documents/{}", self.endpoint, self.database_id, collection, doc_id);
         let res = self.client.get(&url)
             .header("X-Appwrite-Project", &self.project_id)
             .header("X-Appwrite-Key", &self.api_key)
             .send()
-            .await?;
+            .await
+            .map_err(map_err)?;
 
-        if res.status() == 404 {
+        let status = res.status();
+        if status == 404 {
             Ok(None)
+        } else if !status.is_success() {
+            let body = res.text().await.unwrap_or_default();
+            println!("Error in get_document for collection {} doc {}: status {}, body: {}", collection, doc_id, status, body);
+            Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError(format!("get_document failed: {}", body)))))
         } else {
-            let val = res.json().await?;
+            let val = res.json().await.map_err(map_err)?;
             Ok(Some(val))
         }
     }
 
-    async fn list_documents(&self, collection: &str, queries: &[String]) -> std::result::Result<Vec<serde_json::Value>, reqwest::Error> {
+    async fn list_documents(&self, collection: &str, queries: &[String]) -> Result<Vec<serde_json::Value>> {
         let url = format!("{}/databases/{}/collections/{}/documents", self.endpoint, self.database_id, collection);
         let mut req = self.client.get(&url)
             .header("X-Appwrite-Project", &self.project_id)
@@ -367,8 +488,15 @@ impl Db {
             req = req.query(&[("queries[]", q)]);
         }
 
-        let res = req.send().await?;
-        let val: serde_json::Value = res.json().await?;
+        let res = req.send().await.map_err(map_err)?;
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await.unwrap_or_default();
+            println!("Error listing documents in collection {}: status {}, body: {}", collection, status, body);
+            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError(format!("list_documents failed: {}", body)))));
+        }
+
+        let val: serde_json::Value = res.json().await.map_err(map_err)?;
         if let Some(arr) = val["documents"].as_array() {
             Ok(arr.clone())
         } else {
@@ -376,9 +504,9 @@ impl Db {
         }
     }
 
-    async fn create_document(&self, collection: &str, doc_id: &str, data: serde_json::Value) -> std::result::Result<(), reqwest::Error> {
+    async fn create_document(&self, collection: &str, doc_id: &str, data: serde_json::Value) -> Result<()> {
         let url = format!("{}/databases/{}/collections/{}/documents", self.endpoint, self.database_id, collection);
-        let _ = self.client.post(&url)
+        let res = self.client.post(&url)
             .header("X-Appwrite-Project", &self.project_id)
             .header("X-Appwrite-Key", &self.api_key)
             .json(&json!({
@@ -386,30 +514,51 @@ impl Db {
                 "data": data
             }))
             .send()
-            .await?;
+            .await
+            .map_err(map_err)?;
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await.unwrap_or_default();
+            println!("Error creating document in collection {} doc {}: status {}, body: {}", collection, doc_id, status, body);
+            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError(format!("create_document failed: {}", body)))));
+        }
         Ok(())
     }
 
-    async fn update_document(&self, collection: &str, doc_id: &str, data: serde_json::Value) -> std::result::Result<(), reqwest::Error> {
+    async fn update_document(&self, collection: &str, doc_id: &str, data: serde_json::Value) -> Result<()> {
         let url = format!("{}/databases/{}/collections/{}/documents/{}", self.endpoint, self.database_id, collection, doc_id);
-        let _ = self.client.patch(&url)
+        let res = self.client.patch(&url)
             .header("X-Appwrite-Project", &self.project_id)
             .header("X-Appwrite-Key", &self.api_key)
             .json(&json!({
                 "data": data
             }))
             .send()
-            .await?;
+            .await
+            .map_err(map_err)?;
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await.unwrap_or_default();
+            println!("Error updating document in collection {} doc {}: status {}, body: {}", collection, doc_id, status, body);
+            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError(format!("update_document failed: {}", body)))));
+        }
         Ok(())
     }
 
-    async fn delete_document(&self, collection: &str, doc_id: &str) -> std::result::Result<(), reqwest::Error> {
+    async fn delete_document(&self, collection: &str, doc_id: &str) -> Result<()> {
         let url = format!("{}/databases/{}/collections/{}/documents/{}", self.endpoint, self.database_id, collection, doc_id);
-        let _ = self.client.delete(&url)
+        let res = self.client.delete(&url)
             .header("X-Appwrite-Project", &self.project_id)
             .header("X-Appwrite-Key", &self.api_key)
             .send()
-            .await?;
+            .await
+            .map_err(map_err)?;
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await.unwrap_or_default();
+            println!("Error deleting document in collection {} doc {}: status {}, body: {}", collection, doc_id, status, body);
+            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError(format!("delete_document failed: {}", body)))));
+        }
         Ok(())
     }
 
@@ -466,9 +615,9 @@ impl Db {
     pub fn get_messages(&self, room_tag: &str, limit: usize) -> Result<Vec<Message>> {
         run_appwrite(async {
             let queries = vec![
-                format!("equal(\"room_tag\", [\"{}\"])", room_tag),
-                "orderDesc(\"timestamp\")".to_string(),
-                format!("limit({})", limit),
+                json!({ "method": "equal", "attribute": "room_tag", "values": [room_tag] }).to_string(),
+                json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
+                json!({ "method": "limit", "values": [limit] }).to_string(),
             ];
             let docs = self.list_documents("messages", &queries).await.map_err(map_err)?;
             let mut messages = Vec::new();
@@ -509,9 +658,9 @@ impl Db {
     ) -> Result<Vec<Message>> {
         run_appwrite(async {
             let queries = vec![
-                format!("equal(\"room_tag\", [\"{}\"])", room_tag),
-                "orderDesc(\"timestamp\")".to_string(),
-                "limit(100)".to_string(),
+                json!({ "method": "equal", "attribute": "room_tag", "values": [room_tag] }).to_string(),
+                json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
+                json!({ "method": "limit", "values": [100] }).to_string(),
             ];
             let docs = self.list_documents("messages", &queries).await.map_err(map_err)?;
             let mut updated = Vec::new();
@@ -559,8 +708,8 @@ impl Db {
     pub fn get_active_statuses(&self, viewer_tag: &str, expiration_ms: i64) -> Result<Vec<UserStatus>> {
         run_appwrite(async {
             let perm_queries = vec![
-                format!("equal(\"viewer_tag\", [\"{}\"])", viewer_tag),
-                "equal(\"allowed\", [true])".to_string(),
+                json!({ "method": "equal", "attribute": "viewer_tag", "values": [viewer_tag] }).to_string(),
+                json!({ "method": "equal", "attribute": "allowed", "values": [true] }).to_string(),
             ];
             let perm_docs = self.list_documents("status_permissions", &perm_queries).await.map_err(map_err)?;
             let mut allowed_creators: std::collections::HashSet<String> = perm_docs.into_iter()
@@ -570,7 +719,7 @@ impl Db {
 
             let now = chrono::Utc::now().timestamp_millis();
             let status_queries = vec![
-                "limit(100)".to_string(),
+                json!({ "method": "limit", "values": [100] }).to_string(),
             ];
             let status_docs = self.list_documents("statuses", &status_queries).await.map_err(map_err)?;
             let mut active = Vec::new();
@@ -667,18 +816,18 @@ impl Db {
     pub fn get_direct_messages(&self, user1: &str, user2: &str, limit: usize) -> Result<Vec<DirectMessage>> {
         run_appwrite(async {
             let q1 = vec![
-                format!("equal(\"sender_tag\", [\"{}\"])", user1),
-                format!("equal(\"receiver_tag\", [\"{}\"])", user2),
-                "orderDesc(\"timestamp\")".to_string(),
-                format!("limit({})", limit),
+                json!({ "method": "equal", "attribute": "sender_tag", "values": [user1] }).to_string(),
+                json!({ "method": "equal", "attribute": "receiver_tag", "values": [user2] }).to_string(),
+                json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
+                json!({ "method": "limit", "values": [limit] }).to_string(),
             ];
             let docs1 = self.list_documents("direct_messages", &q1).await.map_err(map_err)?;
 
             let q2 = vec![
-                format!("equal(\"sender_tag\", [\"{}\"])", user2),
-                format!("equal(\"receiver_tag\", [\"{}\"])", user1),
-                "orderDesc(\"timestamp\")".to_string(),
-                format!("limit({})", limit),
+                json!({ "method": "equal", "attribute": "sender_tag", "values": [user2] }).to_string(),
+                json!({ "method": "equal", "attribute": "receiver_tag", "values": [user1] }).to_string(),
+                json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
+                json!({ "method": "limit", "values": [limit] }).to_string(),
             ];
             let docs2 = self.list_documents("direct_messages", &q2).await.map_err(map_err)?;
 
@@ -719,9 +868,9 @@ impl Db {
     pub fn update_direct_messages_seen(&self, sender: &str, receiver: &str) -> Result<Vec<String>> {
         run_appwrite(async {
             let q = vec![
-                format!("equal(\"sender_tag\", [\"{}\"])", sender),
-                format!("equal(\"receiver_tag\", [\"{}\"])", receiver),
-                "limit(100)".to_string(),
+                json!({ "method": "equal", "attribute": "sender_tag", "values": [sender] }).to_string(),
+                json!({ "method": "equal", "attribute": "receiver_tag", "values": [receiver] }).to_string(),
+                json!({ "method": "limit", "values": [100] }).to_string(),
             ];
             let docs = self.list_documents("direct_messages", &q).await.map_err(map_err)?;
             let mut updated_ids = Vec::new();
@@ -841,7 +990,7 @@ impl Db {
         run_appwrite(async {
             let all_users = self.get_all_users()?;
             let queries = vec![
-                format!("equal(\"user_tag\", [\"{}\"])", user_tag),
+                json!({ "method": "equal", "attribute": "user_tag", "values": [user_tag] }).to_string(),
             ];
             let docs = self.list_documents("status_permissions", &queries).await.map_err(map_err)?;
             
@@ -871,14 +1020,14 @@ impl Db {
     pub fn get_chatted_user_tags(&self, user_tag: &str) -> Result<Vec<String>> {
         run_appwrite(async {
             let q1 = vec![
-                format!("equal(\"sender_tag\", [\"{}\"])", user_tag),
-                "limit(100)".to_string(),
+                json!({ "method": "equal", "attribute": "sender_tag", "values": [user_tag] }).to_string(),
+                json!({ "method": "limit", "values": [100] }).to_string(),
             ];
             let docs1 = self.list_documents("direct_messages", &q1).await.map_err(map_err)?;
 
             let q2 = vec![
-                format!("equal(\"receiver_tag\", [\"{}\"])", user_tag),
-                "limit(100)".to_string(),
+                json!({ "method": "equal", "attribute": "receiver_tag", "values": [user_tag] }).to_string(),
+                json!({ "method": "limit", "values": [100] }).to_string(),
             ];
             let docs2 = self.list_documents("direct_messages", &q2).await.map_err(map_err)?;
 
