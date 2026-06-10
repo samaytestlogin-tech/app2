@@ -171,6 +171,9 @@ impl Db {
                     println!("Database already exists.");
                 } else {
                     println!("Failed to create database: status {}, body {}", status, text);
+                    if let Ok(dbs) = self.list_databases().await {
+                        println!("Available databases in your project: {:?}", dbs);
+                    }
                 }
             }
             Err(e) => println!("Error sending database creation request: {:?}", e),
@@ -198,6 +201,9 @@ impl Db {
                     println!("Bucket already exists.");
                 } else {
                     println!("Failed to create bucket: status {}, body {}", status, text);
+                    if let Ok(buckets) = self.list_buckets().await {
+                        println!("Available storage buckets in your project: {:?}", buckets);
+                    }
                 }
             }
             Err(e) => println!("Error sending bucket creation request: {:?}", e),
@@ -311,6 +317,28 @@ impl Db {
         }
 
         Ok(())
+    }
+
+    pub async fn list_databases(&self) -> std::result::Result<serde_json::Value, reqwest::Error> {
+        let url = format!("{}/databases", self.endpoint);
+        let res = self.client.get(&url)
+            .header("X-Appwrite-Project", &self.project_id)
+            .header("X-Appwrite-Key", &self.api_key)
+            .send()
+            .await?;
+        let val = res.json::<serde_json::Value>().await?;
+        Ok(val)
+    }
+
+    pub async fn list_buckets(&self) -> std::result::Result<serde_json::Value, reqwest::Error> {
+        let url = format!("{}/storage/buckets", self.endpoint);
+        let res = self.client.get(&url)
+            .header("X-Appwrite-Project", &self.project_id)
+            .header("X-Appwrite-Key", &self.api_key)
+            .send()
+            .await?;
+        let val = res.json::<serde_json::Value>().await?;
+        Ok(val)
     }
 
     async fn get_document(&self, collection: &str, doc_id: &str) -> std::result::Result<Option<serde_json::Value>, reqwest::Error> {

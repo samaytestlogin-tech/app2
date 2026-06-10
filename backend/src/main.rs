@@ -229,14 +229,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         status: "sent".to_string(),
                     };
 
-                    if db.insert_message(&msg).is_ok() {
-                        let _ = socket.to(payload.room_tag.clone()).emit("new_msg", &msg).await;
-                        socket
-                            .emit(
-                                "msg_sent",
-                                &serde_json::json!({ "id": msg.id, "status": "sent" }),
-                            )
-                            .ok();
+                    match db.insert_message(&msg) {
+                        Ok(_) => {
+                            let _ = socket.to(payload.room_tag.clone()).emit("new_msg", &msg).await;
+                            let _ = socket.emit("new_msg", &msg).ok();
+                            socket
+                                .emit(
+                                    "msg_sent",
+                                    &serde_json::json!({ "id": msg.id, "status": "sent" }),
+                                )
+                                .ok();
+                        }
+                        Err(e) => {
+                            eprintln!("Error inserting message to room {}: {:?}", payload.room_tag, e);
+                        }
                     }
                 }
             });
@@ -420,18 +426,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         timestamp: chrono::Utc::now().timestamp_millis(),
                     };
 
-                    if db.insert_status(&status).is_ok() {
-                        let r = reg.lock().await;
-                        for (tag, sock) in r.iter() {
-                            if tag != &status.creator_id {
-                                if let Ok(Some(allowed)) = db.get_status_permission(&status.creator_id, tag) {
-                                    if allowed {
-                                        let _ = sock.emit("new_status", &status);
+                    match db.insert_status(&status) {
+                        Ok(_) => {
+                            let r = reg.lock().await;
+                            for (tag, sock) in r.iter() {
+                                if tag != &status.creator_id {
+                                    if let Ok(Some(allowed)) = db.get_status_permission(&status.creator_id, tag) {
+                                        if allowed {
+                                            let _ = sock.emit("new_status", &status);
+                                        }
                                     }
                                 }
                             }
+                            socket.emit("status_posted", &status).ok();
                         }
-                        socket.emit("status_posted", &status).ok();
+                        Err(e) => {
+                            eprintln!("Error inserting status for user {}: {:?}", status.creator_id, e);
+                        }
                     }
                 }
             });
