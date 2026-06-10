@@ -1046,6 +1046,74 @@ impl Db {
         })
     }
 
+    pub fn get_chat_summary(&self, user_tag: &str) -> Result<serde_json::Value> {
+        run_appwrite(async {
+            // 1. Get last message and unread count for direct messages
+            let q1 = vec![
+                json!({ "method": "equal", "attribute": "sender_tag", "values": [user_tag] }).to_string(),
+                json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
+                json!({ "method": "limit", "values": [100] }).to_string(),
+            ];
+            let docs1 = self.list_documents("direct_messages", &q1).await.unwrap_or_default();
+
+            let q2 = vec![
+                json!({ "method": "equal", "attribute": "receiver_tag", "values": [user_tag] }).to_string(),
+                json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
+                json!({ "method": "limit", "values": [100] }).to_string(),
+            ];
+            let docs2 = self.list_documents("direct_messages", &q2).await.unwrap_or_default();
+
+            let mut direct_last_message = std::collections::HashMap::new();
+            let mut direct_unread = std::collections::HashMap::new();
+
+            for d in docs1 {
+                let receiver = d["receiver_tag"].as_str().unwrap_or("").to_string();
+                let timestamp = d["timestamp"].as_i64().unwrap_or(0);
+                let entry = direct_last_message.entry(receiver).or_insert(0);
+                if timestamp > *entry {
+                    *entry = timestamp;
+                }
+            }
+
+            for d in docs2 {
+                let sender = d["sender_tag"].as_str().unwrap_or("").to_string();
+                let timestamp = d["timestamp"].as_i64().unwrap_or(0);
+                let entry = direct_last_message.entry(sender.clone()).or_insert(0);
+                if timestamp > *entry {
+                    *entry = timestamp;
+                }
+
+                let status = d["status"].as_str().unwrap_or("sent");
+                if status != "seen" {
+                    *direct_unread.entry(sender).or_insert(0) += 1;
+                }
+            }
+
+            // 2. Get last message timestamp for rooms
+            let rooms = self.get_rooms().unwrap_or_default();
+            let mut room_last_message = std::collections::HashMap::new();
+            for room in rooms {
+                let q_room = vec![
+                    json!({ "method": "equal", "attribute": "room_tag", "values": [room.name] }).to_string(),
+                    json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
+                    json!({ "method": "limit", "values": [1] }).to_string(),
+                ];
+                if let Ok(docs) = self.list_documents("messages", &q_room).await {
+                    if let Some(d) = docs.first() {
+                        let timestamp = d["timestamp"].as_i64().unwrap_or(0);
+                        room_last_message.insert(room.name, timestamp);
+                    }
+                }
+            }
+
+            Ok(json!({
+                "direct_last_message": direct_last_message,
+                "direct_unread": direct_unread,
+                "room_last_message": room_last_message,
+            }))
+        })
+    }
+
     pub fn upload_file(&self, bytes: &[u8], filename: &str) -> Result<String> {
         let url = format!("{}/storage/buckets/{}/files", self.endpoint, self.bucket_id);
         let form = reqwest::multipart::Form::new()

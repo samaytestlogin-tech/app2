@@ -342,12 +342,23 @@ function App() {
     }
   };
 
+  const fetchChatSummary = async (userTag: string) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/chats/summary?user_tag=${userTag}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.direct_last_message) setDirectLastMessage(data.direct_last_message);
+        if (data.direct_unread) setUnreadDirects(data.direct_unread);
+        if (data.room_last_message) setRoomLastMessage(data.room_last_message);
+      }
+    } catch (err) {
+      console.error('Failed to fetch chat summary', err);
+    }
+  };
+
   const initializeSocket = (user: User) => {
     socket.auth = { userTag: user.tag, username: user.username };
     socket.connect();
-    
-    // Register socket unique tag
-    socket.emit('register_socket', { user_tag: user.tag });
   };
 
   // Socket event handlers
@@ -355,6 +366,18 @@ function App() {
     if (!currentUser) return;
 
     fetchChattedUsers(currentUser.tag);
+    fetchChatSummary(currentUser.tag);
+
+    const handleConnect = () => {
+      console.log('Socket connected, registering user tag:', currentUser.tag);
+      socket.emit('register_socket', { user_tag: currentUser.tag });
+    };
+
+    if (socket.connected) {
+      handleConnect();
+    }
+
+    socket.on('connect', handleConnect);
 
     // A. Online Presence Handlers
     socket.on('user_online', (data: { tag: string }) => {
@@ -617,10 +640,12 @@ function App() {
       fetchUsers(); // Refresh presence and new registered users periodically
       if (currentUser) {
         fetchChattedUsers(currentUser.tag);
+        fetchChatSummary(currentUser.tag);
       }
     }, 20000);
 
     return () => {
+      socket.off('connect', handleConnect);
       socket.off('user_online');
       socket.off('user_offline');
       socket.off('room_history');

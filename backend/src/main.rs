@@ -612,6 +612,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/auth/login", post(login))
         .route("/api/users", get(get_users))
         .route("/api/users/chatted", get(get_chatted_users))
+        .route("/api/chats/summary", get(get_chat_summary))
         .nest_service("/uploads", ServeDir::new("uploads"))
         .with_state(app_state)
         .layer(layer)
@@ -693,6 +694,15 @@ async fn get_chatted_users(
     let user_tag = params.get("user_tag").ok_or(StatusCode::BAD_REQUEST)?;
     let tags = state.db.get_chatted_user_tags(user_tag).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(tags))
+}
+
+async fn get_chat_summary(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let user_tag = params.get("user_tag").ok_or(StatusCode::BAD_REQUEST)?;
+    let summary = state.db.get_chat_summary(user_tag).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(summary))
 }
 
 async fn upload_file(
