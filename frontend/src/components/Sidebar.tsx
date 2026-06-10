@@ -20,6 +20,10 @@ interface SidebarProps {
   setActiveDirectUser: (user: User | null) => void;
   onLogout: () => void;
   fetchRooms: () => Promise<void>;
+  unreadRooms: { [roomTag: string]: number };
+  unreadDirects: { [userTag: string]: number };
+  roomLastMessage: { [roomTag: string]: number };
+  directLastMessage: { [userTag: string]: number };
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -39,6 +43,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   setActiveDirectUser,
   onLogout,
   fetchRooms,
+  unreadRooms,
+  unreadDirects,
+  roomLastMessage,
+  directLastMessage,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [newTag, setNewTag] = useState('');
@@ -92,6 +100,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
     return true;
   });
+
+  const sortedRooms = React.useMemo(() => {
+    return [...filteredRooms].sort((a, b) => {
+      const timeA = roomLastMessage[a.name] || 0;
+      const timeB = roomLastMessage[b.name] || 0;
+      return timeB - timeA;
+    });
+  }, [filteredRooms, roomLastMessage]);
+
+  const sortedUsers = React.useMemo(() => {
+    return [...filteredUsers].sort((a, b) => {
+      const timeA = directLastMessage[a.tag] || 0;
+      const timeB = directLastMessage[b.tag] || 0;
+      return timeB - timeA;
+    });
+  }, [filteredUsers, directLastMessage]);
 
   // Status Permissions & Deletion Helpers
   const fetchPermissions = async () => {
@@ -267,45 +291,53 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {/* Direct Messages list */}
             <div className="tag-list-label">Direct Messages</div>
             <div className="tag-items">
-              {filteredUsers.length > 0 ? (
-                filteredUsers.map((user) => (
-                  <div
-                    key={user.tag}
-                    className={`tag-item ${activeDirectUser?.tag === user.tag ? 'active' : ''}`}
-                    onClick={() => setActiveDirectUser(user)}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
-                      <div style={{ position: 'relative' }}>
-                        <div className="user-avatar" style={{ width: '36px', height: '36px', fontSize: '1.2rem' }}>
-                          {user.avatar}
+              {sortedUsers.length > 0 ? (
+                sortedUsers.map((user) => {
+                  const unreadCount = unreadDirects[user.tag] || 0;
+                  return (
+                    <div
+                      key={user.tag}
+                      className={`tag-item ${activeDirectUser?.tag === user.tag ? 'active' : ''}`}
+                      onClick={() => setActiveDirectUser(user)}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
+                        <div style={{ position: 'relative' }}>
+                          <div className="user-avatar" style={{ width: '36px', height: '36px', fontSize: '1.2rem' }}>
+                            {user.avatar}
+                          </div>
+                          {user.online && (
+                            <div
+                              style={{
+                                position: 'absolute',
+                                bottom: '-2px',
+                                right: '-2px',
+                                width: '12px',
+                                height: '12px',
+                                borderRadius: '50%',
+                                backgroundColor: '#2ec4b6',
+                                border: '2px solid var(--bg-dark)',
+                                boxShadow: '0 0 8px #2ec4b6',
+                              }}
+                            />
+                          )}
                         </div>
-                        {user.online && (
-                          <div
-                            style={{
-                              position: 'absolute',
-                              bottom: '-2px',
-                              right: '-2px',
-                              width: '12px',
-                              height: '12px',
-                              borderRadius: '50%',
-                              backgroundColor: '#2ec4b6',
-                              border: '2px solid var(--bg-dark)',
-                              boxShadow: '0 0 8px #2ec4b6',
-                            }}
-                          />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: unreadCount ? 600 : 500, color: unreadCount ? 'var(--text-main)' : 'inherit', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {user.username}
+                          </div>
+                          <div style={{ fontSize: '0.8rem', color: unreadCount ? 'var(--accent-purple)' : 'var(--text-muted)' }}>
+                            @{user.tag}
+                          </div>
+                        </div>
+                        {unreadCount > 0 && (
+                          <div className="unread-badge">
+                            {unreadCount}
+                          </div>
                         )}
                       </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {user.username}
-                        </div>
-                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                          @{user.tag}
-                        </div>
-                      </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               ) : (
                 <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                   No other users found.
@@ -368,48 +400,58 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {/* Tags list */}
             <div className="tag-list-label">Group Tag channels</div>
             <div className="tag-items" style={{ marginBottom: '20px' }}>
-              {filteredRooms.length > 0 ? (
-                filteredRooms.map((room) => (
-                  <div
-                    key={room.name}
-                    className={`tag-item ${activeTag === room.name ? 'active' : ''}`}
-                    onClick={() => setActiveTag(room.name)}
-                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}
-                  >
-                    <div className="tag-name-container">
-                      <div className="tag-hash-icon">#</div>
-                      <span className="tag-title">#{room.name}</span>
-                    </div>
-                    {room.creator_tag === currentUser.tag && (
-                      <div style={{ display: 'flex', gap: '8px', paddingRight: '4px' }}>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleEditRoom(room.name);
-                          }}
-                          style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}
-                          title="Rename Group"
-                          onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-main)')}
-                          onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
-                        >
-                          <Edit3 size={13} />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteRoom(room.name);
-                          }}
-                          style={{ background: 'none', border: 'none', color: '#ff5c5c', cursor: 'pointer', padding: '2px' }}
-                          title="Delete Group"
-                          onMouseEnter={(e) => (e.currentTarget.style.color = '#ff3333')}
-                          onMouseLeave={(e) => (e.currentTarget.style.color = '#ff5c5c')}
-                        >
-                          <Trash2 size={13} />
-                        </button>
+              {sortedRooms.length > 0 ? (
+                sortedRooms.map((room) => {
+                  const unreadCount = unreadRooms[room.name] || 0;
+                  return (
+                    <div
+                      key={room.name}
+                      className={`tag-item ${activeTag === room.name ? 'active' : ''}`}
+                      onClick={() => setActiveTag(room.name)}
+                      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}
+                    >
+                      <div className="tag-name-container" style={{ flex: 1, minWidth: 0 }}>
+                        <div className="tag-hash-icon">#</div>
+                        <span className="tag-title" style={{ fontWeight: unreadCount ? 600 : 500, color: unreadCount ? 'var(--text-main)' : 'inherit', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          #{room.name}
+                        </span>
+                        {unreadCount > 0 && (
+                          <div className="unread-badge">
+                            {unreadCount}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                ))
+                      {room.creator_tag === currentUser.tag && (
+                        <div style={{ display: 'flex', gap: '8px', paddingRight: '4px' }}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleEditRoom(room.name);
+                            }}
+                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}
+                            title="Rename Group"
+                            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-main)')}
+                            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+                          >
+                            <Edit3 size={13} />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteRoom(room.name);
+                            }}
+                            style={{ background: 'none', border: 'none', color: '#ff5c5c', cursor: 'pointer', padding: '2px' }}
+                            title="Delete Group"
+                            onMouseEnter={(e) => (e.currentTarget.style.color = '#ff3333')}
+                            onMouseLeave={(e) => (e.currentTarget.style.color = '#ff5c5c')}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
               ) : (
                 <div style={{ textAlign: 'center', padding: '10px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                   No tag rooms found.

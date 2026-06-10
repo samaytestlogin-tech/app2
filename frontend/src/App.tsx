@@ -32,6 +32,39 @@ function App() {
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [chattedUserTags, setChattedUserTags] = useState<string[]>([]);
 
+  // PWA Notification & Sorting State
+  const [unreadRooms, setUnreadRooms] = useState<{ [roomTag: string]: number }>({});
+  const [unreadDirects, setUnreadDirects] = useState<{ [userTag: string]: number }>({});
+  const [roomLastMessage, setRoomLastMessage] = useState<{ [roomTag: string]: number }>({});
+  const [directLastMessage, setDirectLastMessage] = useState<{ [userTag: string]: number }>({});
+
+  const allUsersRef = useRef<User[]>([]);
+  useEffect(() => {
+    allUsersRef.current = allUsers;
+  }, [allUsers]);
+
+  const triggerNotification = (title: string, body: string, tag?: string) => {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      const options = {
+        body,
+        icon: '/icons/icon-192.png',
+        badge: '/favicon.svg',
+        tag: tag || 'antigravity-message',
+        renotify: true,
+      };
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.ready.then((reg) => {
+          reg.showNotification(title, options).catch((err) => {
+            console.error('ServiceWorker showNotification failed:', err);
+            new Notification(title, options);
+          });
+        });
+      } else {
+        new Notification(title, options);
+      }
+    }
+  };
+
   // Modals & Stories Player
   const [showPostStatusModal, setShowPostStatusModal] = useState(false);
   const [activeStoryUserId, setActiveStoryUserId] = useState<string | null>(null);
@@ -242,6 +275,10 @@ function App() {
   };
 
   useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
     const cached = localStorage.getItem('chat_user_profile');
     if (cached) {
       const parsedUser = JSON.parse(cached);
@@ -347,7 +384,14 @@ function App() {
     });
 
     socket.on('new_msg', (msg: Message) => {
-      if (msg.room_tag === activeTag) {
+      setRoomLastMessage((prev) => ({
+        ...prev,
+        [msg.room_tag]: msg.timestamp,
+      }));
+
+      const isCurrentActiveRoom = msg.room_tag === activeTag;
+
+      if (isCurrentActiveRoom) {
         setMessages((prev) => {
           if (prev.some(m => m.id === msg.id)) return prev;
           return [...prev, msg];
@@ -361,12 +405,25 @@ function App() {
           });
         }
       } else {
+        setUnreadRooms((prev) => ({
+          ...prev,
+          [msg.room_tag]: (prev[msg.room_tag] || 0) + 1,
+        }));
+
         if (msg.sender_id !== currentUser.tag) {
           socket.emit('msg_delivered', {
             message_id: msg.id,
             room_tag: msg.room_tag,
           });
         }
+      }
+
+      if (msg.sender_id !== currentUser.tag && (!isCurrentActiveRoom || !document.hasFocus())) {
+        triggerNotification(
+          `#${msg.room_tag} | ${msg.sender_name}`,
+          msg.msg_type === 'text' ? msg.content : `[Shared ${msg.msg_type}]`,
+          `room-${msg.room_tag}`
+        );
       }
     });
 
@@ -400,22 +457,39 @@ function App() {
     });
 
     socket.on('new_direct_msg', (msg: DirectMessage) => {
-      // If we are actively chatting with the sender
-      if (activeDirectUser && msg.sender_tag === activeDirectUser.tag) {
+      setDirectLastMessage((prev) => ({
+        ...prev,
+        [msg.sender_tag]: msg.timestamp,
+      }));
+
+      const isCurrentActiveDM = activeDirectUser && msg.sender_tag === activeDirectUser.tag;
+
+      if (isCurrentActiveDM) {
         setDirectMessages((prev) => {
           if (prev.some(d => d.id === msg.id)) return prev;
           return [...prev, msg];
         });
 
-        // Emit seen
         socket.emit('direct_msg_seen', {
           message_id: msg.id,
           sender_tag: msg.sender_tag,
           receiver_tag: currentUser.tag,
         });
       } else {
-        // If we are just online, server marked it as delivered since we are connected.
-        // We can optionally refresh users to show unread notifications or status indicators.
+        setUnreadDirects((prev) => ({
+          ...prev,
+          [msg.sender_tag]: (prev[msg.sender_tag] || 0) + 1,
+        }));
+      }
+
+      if (msg.sender_tag !== currentUser.tag && (!isCurrentActiveDM || !document.hasFocus())) {
+        const senderUser = allUsersRef.current.find(u => u.tag === msg.sender_tag);
+        const senderName = senderUser ? senderUser.username : `@${msg.sender_tag}`;
+        triggerNotification(
+          `Message from ${senderName}`,
+          msg.msg_type === 'text' ? msg.content : `[Shared ${msg.msg_type}]`,
+          `dm-${msg.sender_tag}`
+        );
       }
 
       setChattedUserTags((prev) => {
@@ -425,6 +499,11 @@ function App() {
     });
 
     socket.on('direct_msg_sent', (msg: DirectMessage) => {
+      setDirectLastMessage((prev) => ({
+        ...prev,
+        [msg.receiver_tag]: msg.timestamp,
+      }));
+
       if (activeDirectUser && msg.receiver_tag === activeDirectUser.tag) {
         setDirectMessages((prev) => {
           if (prev.some(d => d.id === msg.id)) return prev;
@@ -488,6 +567,12 @@ function App() {
       if (audioEffectsRef.current) {
         audioEffectsRef.current.playRingTone();
       }
+
+      triggerNotification(
+        `📞 Incoming Call from ${data.caller_name}`,
+        `@${data.caller_tag} is calling you...`,
+        'antigravity-call'
+      );
     });
 
     socket.on('call_accepted', async (data: { receiver_tag: string; answer: any }) => {
@@ -562,6 +647,7 @@ function App() {
   // Join Group Channel Room when active tag changes
   useEffect(() => {
     if (activeTag && currentUser) {
+      setUnreadRooms((prev) => ({ ...prev, [activeTag]: 0 }));
       setMessages([]);
       setActiveDirectUser(null);
       setDirectMessages([]);
@@ -576,6 +662,7 @@ function App() {
   // Load DM history when active recipient changes
   useEffect(() => {
     if (activeDirectUser && currentUser) {
+      setUnreadDirects((prev) => ({ ...prev, [activeDirectUser.tag]: 0 }));
       setDirectMessages([]);
       setActiveTag(null);
       setMessages([]);
@@ -835,6 +922,10 @@ function App() {
         setActiveDirectUser={(user) => { setActiveDirectUser(user); setActiveTag(null); }}
         onLogout={handleLogout}
         fetchRooms={fetchTags}
+        unreadRooms={unreadRooms}
+        unreadDirects={unreadDirects}
+        roomLastMessage={roomLastMessage}
+        directLastMessage={directLastMessage}
       />
 
       {(activeTag || activeDirectUser) ? (
