@@ -1,9 +1,10 @@
 import { io } from 'socket.io-client';
 
 const BACKEND_URL = 
-  window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  (import.meta.env.VITE_BACKEND_URL as string) ||
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:3000'
-    : window.location.origin;
+    : window.location.origin);
 
 export const socket = io(BACKEND_URL, {
   autoConnect: false, // Connected once user establishes profile
