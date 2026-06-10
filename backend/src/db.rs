@@ -579,7 +579,10 @@ impl Db {
 
     pub fn get_rooms(&self) -> Result<Vec<DbRoom>> {
         run_appwrite(async {
-            let docs = self.list_documents("rooms", &[]).await.map_err(map_err)?;
+            let queries = vec![
+                json!({ "method": "limit", "values": [1000] }).to_string(),
+            ];
+            let docs = self.list_documents("rooms", &queries).await.map_err(map_err)?;
             let mut rooms = Vec::new();
             for d in docs {
                 rooms.push(DbRoom {
@@ -782,7 +785,10 @@ impl Db {
 
     pub fn get_all_users(&self) -> Result<Vec<DbUser>> {
         run_appwrite(async {
-            let docs = self.list_documents("users", &[]).await.map_err(map_err)?;
+            let queries = vec![
+                json!({ "method": "limit", "values": [1000] }).to_string(),
+            ];
+            let docs = self.list_documents("users", &queries).await.map_err(map_err)?;
             let mut users = Vec::new();
             for d in docs {
                 users.push(DbUser {
@@ -1021,12 +1027,14 @@ impl Db {
         run_appwrite(async {
             let q1 = vec![
                 json!({ "method": "equal", "attribute": "sender_tag", "values": [user_tag] }).to_string(),
+                json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
                 json!({ "method": "limit", "values": [100] }).to_string(),
             ];
             let docs1 = self.list_documents("direct_messages", &q1).await.map_err(map_err)?;
 
             let q2 = vec![
                 json!({ "method": "equal", "attribute": "receiver_tag", "values": [user_tag] }).to_string(),
+                json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
                 json!({ "method": "limit", "values": [100] }).to_string(),
             ];
             let docs2 = self.list_documents("direct_messages", &q2).await.map_err(map_err)?;

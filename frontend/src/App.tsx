@@ -427,18 +427,16 @@ function App() {
             user_id: currentUser.tag,
           });
         }
-      } else {
+      } else if (msg.sender_id !== currentUser.tag) {
         setUnreadRooms((prev) => ({
           ...prev,
           [msg.room_tag]: (prev[msg.room_tag] || 0) + 1,
         }));
 
-        if (msg.sender_id !== currentUser.tag) {
-          socket.emit('msg_delivered', {
-            message_id: msg.id,
-            room_tag: msg.room_tag,
-          });
-        }
+        socket.emit('msg_delivered', {
+          message_id: msg.id,
+          room_tag: msg.room_tag,
+        });
       }
 
       if (msg.sender_id !== currentUser.tag && (!isCurrentActiveRoom || !document.hasFocus())) {
@@ -480,6 +478,10 @@ function App() {
     });
 
     socket.on('new_direct_msg', (msg: DirectMessage) => {
+      if (!allUsersRef.current.some(u => u.tag === msg.sender_tag)) {
+        fetchUsers();
+      }
+
       setDirectLastMessage((prev) => ({
         ...prev,
         [msg.sender_tag]: msg.timestamp,
