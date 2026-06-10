@@ -15,7 +15,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
-use uuid::Uuid;
 
 mod db;
 
@@ -126,6 +125,10 @@ struct AppState {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all("uploads")?;
+    match dotenvy::dotenv_override() {
+        Ok(path) => println!("Loaded env file from: {:?}", path),
+        Err(e) => println!("dotenvy error: {:?}", e),
+    }
 
     let (layer, io) = SocketIo::new_layer();
 
@@ -659,7 +662,10 @@ async fn get_chatted_users(
     Ok(Json(tags))
 }
 
-async fn upload_file(mut multipart: Multipart) -> Result<Json<UploadResponse>, StatusCode> {
+async fn upload_file(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<UploadResponse>, StatusCode> {
     let mut file_url = String::new();
     let mut file_name = String::new();
     let mut file_size = 0;
@@ -670,21 +676,16 @@ async fn upload_file(mut multipart: Multipart) -> Result<Json<UploadResponse>, S
         if field_name == "file" {
             file_name = field.file_name().unwrap_or("file").to_string();
             
-            let extension = std::path::Path::new(&file_name)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .unwrap_or("bin")
-                .to_string();
-
-            let unique_name = format!("{}.{}", Uuid::new_v4(), extension);
-            let path = std::path::Path::new("uploads").join(&unique_name);
-
             if let Ok(bytes) = field.bytes().await {
                 file_size = bytes.len() as i64;
-                if std::fs::write(&path, bytes).is_ok() {
-                    file_url = format!("/uploads/{}", unique_name);
-                } else {
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                match state.db.upload_file(&bytes, &file_name) {
+                    Ok(url) => {
+                        file_url = url;
+                    }
+                    Err(e) => {
+                        println!("Upload to Appwrite failed: {:?}", e);
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
                 }
             } else {
                 return Err(StatusCode::BAD_REQUEST);

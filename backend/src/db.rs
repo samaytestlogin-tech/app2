@@ -1,6 +1,10 @@
-use std::sync::{Arc, Mutex};
-use rusqlite::{params, Connection, Result, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use reqwest::Client;
+use bcrypt;
+
+// Re-export rusqlite types for main.rs compatibility
+pub type Result<T> = std::result::Result<T, rusqlite::Error>;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
@@ -64,624 +68,832 @@ pub struct StatusPermissionItem {
     pub allowed: bool,
 }
 
+#[derive(Debug)]
+struct AppwriteError(String);
+
+impl std::fmt::Display for AppwriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Appwrite error: {}", self.0)
+    }
+}
+
+impl std::error::Error for AppwriteError {}
+
+fn map_err<E: std::error::Error + Send + Sync + 'static>(e: E) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+}
+
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(future)
+    })
+}
+
+fn run_appwrite<T, F>(future: F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    block_on(future)
+}
+
 #[derive(Clone)]
 pub struct Db {
-    conn: Arc<Mutex<Connection>>,
+    client: Client,
+    endpoint: String,
+    project_id: String,
+    api_key: String,
+    database_id: String,
+    bucket_id: String,
 }
 
 impl Db {
-    pub fn init(path: &str) -> Result<Self> {
-        let conn = Connection::open(path)?;
-        
-        // Enable WAL mode for concurrency
-        conn.pragma_update(None, "journal_mode", &"WAL")?;
-        conn.pragma_update(None, "foreign_keys", &"ON")?;
+    pub fn init(_path: &str) -> Result<Self> {
+        let endpoint = std::env::var("APPWRITE_ENDPOINT")
+            .unwrap_or_else(|_| "https://fra.cloud.appwrite.io/v1".to_string());
+        let project_id = std::env::var("APPWRITE_PROJECT_ID")
+            .unwrap_or_else(|_| "69fc8f7800089ff12a9e".to_string());
+        let api_key = std::env::var("APPWRITE_API_KEY")
+            .unwrap_or_default();
+        let database_id = std::env::var("APPWRITE_DATABASE_ID")
+            .unwrap_or_else(|_| "erps".to_string());
+        let bucket_id = std::env::var("APPWRITE_BUCKET_ID")
+            .unwrap_or_else(|_| "default".to_string());
 
-        // Create tables
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS users (
-                tag TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                avatar TEXT NOT NULL,
-                password_hash TEXT NOT NULL
-            )",
-            [],
-        )?;
+        let client = Client::builder()
+            .build()
+            .map_err(map_err)?;
 
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS rooms (
-                name TEXT PRIMARY KEY,
-                creator_tag TEXT
-            )",
-            [],
-        )?;
+        let db = Self {
+            client,
+            endpoint,
+            project_id,
+            api_key,
+            database_id,
+            bucket_id,
+        };
 
-        // Run migrations: alter rooms to add creator_tag column if it was created previously
-        let _ = conn.execute("ALTER TABLE rooms ADD COLUMN creator_tag TEXT", []);
+        // Spawn a background initializer to setup database and collections if API key exists
+        if !db.api_key.is_empty() {
+            let db_clone = db.clone();
+            tokio::spawn(async move {
+                if let Err(e) = db_clone.ensure_collections_setup().await {
+                    println!("Appwrite database auto-initialization warning: {:?}", e);
+                } else {
+                    println!("Appwrite database structures validated successfully.");
+                }
+            });
+        } else {
+            println!("Warning: APPWRITE_API_KEY environment variable is not set. Skipping DB auto-initialization.");
+        }
 
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS status_permissions (
-                user_tag TEXT NOT NULL,
-                viewer_tag TEXT NOT NULL,
-                allowed INTEGER NOT NULL,
-                PRIMARY KEY (user_tag, viewer_tag),
-                FOREIGN KEY(user_tag) REFERENCES users(tag),
-                FOREIGN KEY(viewer_tag) REFERENCES users(tag)
-            )",
-            [],
-        )?;
+        Ok(db)
+    }
 
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS messages (
-                id TEXT PRIMARY KEY,
-                room_tag TEXT NOT NULL,
-                sender_id TEXT NOT NULL,
-                sender_name TEXT NOT NULL,
-                msg_type TEXT NOT NULL,
-                content TEXT NOT NULL,
-                file_url TEXT,
-                file_name TEXT,
-                file_size INTEGER,
-                timestamp INTEGER NOT NULL,
-                status TEXT NOT NULL
-            )",
-            [],
-        )?;
+    async fn ensure_collections_setup(&self) -> std::result::Result<(), reqwest::Error> {
+        // 1. Create database
+        let create_db_url = format!("{}/databases", self.endpoint);
+        let res_db = self.client.post(&create_db_url)
+            .header("X-Appwrite-Project", &self.project_id)
+            .header("X-Appwrite-Key", &self.api_key)
+            .json(&json!({
+                "databaseId": self.database_id,
+                "name": "erps"
+            }))
+            .send()
+            .await;
+        match res_db {
+            Ok(res) => {
+                let status = res.status();
+                let text = res.text().await.unwrap_or_default();
+                if status.is_success() {
+                    println!("Database created successfully: {}", text);
+                } else if status == 409 {
+                    println!("Database already exists.");
+                } else {
+                    println!("Failed to create database: status {}, body {}", status, text);
+                }
+            }
+            Err(e) => println!("Error sending database creation request: {:?}", e),
+        }
 
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS direct_messages (
-                id TEXT PRIMARY KEY,
-                sender_tag TEXT NOT NULL,
-                receiver_tag TEXT NOT NULL,
-                msg_type TEXT NOT NULL,
-                content TEXT NOT NULL,
-                file_url TEXT,
-                file_name TEXT,
-                file_size INTEGER,
-                timestamp INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                FOREIGN KEY(sender_tag) REFERENCES users(tag),
-                FOREIGN KEY(receiver_tag) REFERENCES users(tag)
-            )",
-            [],
-        )?;
+        // 2. Create storage bucket
+        let create_bucket_url = format!("{}/storage/buckets", self.endpoint);
+        let res_bucket = self.client.post(&create_bucket_url)
+            .header("X-Appwrite-Project", &self.project_id)
+            .header("X-Appwrite-Key", &self.api_key)
+            .json(&json!({
+                "bucketId": self.bucket_id,
+                "name": "erps_files",
+                "permissions": ["read(\"any\")", "create(\"any\")", "update(\"any\")", "delete(\"any\")"]
+            }))
+            .send()
+            .await;
+        match res_bucket {
+            Ok(res) => {
+                let status = res.status();
+                let text = res.text().await.unwrap_or_default();
+                if status.is_success() {
+                    println!("Bucket created successfully: {}", text);
+                } else if status == 409 {
+                    println!("Bucket already exists.");
+                } else {
+                    println!("Failed to create bucket: status {}, body {}", status, text);
+                }
+            }
+            Err(e) => println!("Error sending bucket creation request: {:?}", e),
+        }
 
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS statuses (
-                id TEXT PRIMARY KEY,
-                creator_id TEXT NOT NULL,
-                creator_name TEXT NOT NULL,
-                creator_avatar TEXT NOT NULL,
-                media_type TEXT NOT NULL,
-                media_url TEXT NOT NULL,
-                text_content TEXT NOT NULL,
-                timestamp INTEGER NOT NULL
-            )",
-            [],
-        )?;
+        // Collections mapping
+        let collections = vec![
+            ("users", "users", vec![
+                ("tag", "string", 255),
+                ("name", "string", 255),
+                ("avatar", "string", 255),
+                ("password_hash", "string", 255),
+            ]),
+            ("rooms", "rooms", vec![
+                ("name", "string", 255),
+                ("creator_tag", "string", 255),
+            ]),
+            ("messages", "messages", vec![
+                ("id", "string", 255),
+                ("room_tag", "string", 255),
+                ("sender_id", "string", 255),
+                ("sender_name", "string", 255),
+                ("msg_type", "string", 50),
+                ("content", "string", 1000),
+                ("file_url", "string", 1000),
+                ("file_name", "string", 255),
+                ("file_size", "integer", 0),
+                ("timestamp", "integer", 0),
+                ("status", "string", 50),
+            ]),
+            ("direct_messages", "direct_messages", vec![
+                ("id", "string", 255),
+                ("sender_tag", "string", 255),
+                ("receiver_tag", "string", 255),
+                ("msg_type", "string", 50),
+                ("content", "string", 1000),
+                ("file_url", "string", 1000),
+                ("file_name", "string", 255),
+                ("file_size", "integer", 0),
+                ("timestamp", "integer", 0),
+                ("status", "string", 50),
+            ]),
+            ("statuses", "statuses", vec![
+                ("id", "string", 255),
+                ("creator_id", "string", 255),
+                ("creator_name", "string", 255),
+                ("creator_avatar", "string", 255),
+                ("media_type", "string", 50),
+                ("media_url", "string", 1000),
+                ("text_content", "string", 1000),
+                ("timestamp", "integer", 0),
+            ]),
+            ("status_permissions", "status_permissions", vec![
+                ("user_tag", "string", 255),
+                ("viewer_tag", "string", 255),
+                ("allowed", "boolean", 0),
+            ]),
+        ];
 
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        for (col_id, col_name, attributes) in collections {
+            // Create collection
+            let create_col_url = format!("{}/databases/{}/collections", self.endpoint, self.database_id);
+            let res_col = self.client.post(&create_col_url)
+                .header("X-Appwrite-Project", &self.project_id)
+                .header("X-Appwrite-Key", &self.api_key)
+                .json(&json!({
+                    "collectionId": col_id,
+                    "name": col_name,
+                    "permissions": ["read(\"any\")", "create(\"any\")", "update(\"any\")", "delete(\"any\")"]
+                }))
+                .send()
+                .await;
+            match res_col {
+                Ok(res) => {
+                    let status = res.status();
+                    if !status.is_success() && status != 409 {
+                        println!("Failed to create collection {}: status {}, body {}", col_id, status, res.text().await.unwrap_or_default());
+                    }
+                }
+                Err(e) => println!("Error creating collection {}: {:?}", col_id, e),
+            }
+
+            // Create attributes
+            for &(attr_key, attr_type, attr_size) in &attributes {
+                let attr_url = format!("{}/databases/{}/collections/{}/attributes/{}", self.endpoint, self.database_id, col_id, attr_type);
+                let mut attr_body = json!({
+                    "key": attr_key,
+                    "required": false
+                });
+
+                if attr_type == "string" {
+                    attr_body["size"] = json!(attr_size);
+                }
+
+                let res_attr = self.client.post(&attr_url)
+                    .header("X-Appwrite-Project", &self.project_id)
+                    .header("X-Appwrite-Key", &self.api_key)
+                    .json(&attr_body)
+                    .send()
+                    .await;
+                match res_attr {
+                    Ok(res) => {
+                        let status = res.status();
+                        if !status.is_success() && status != 409 {
+                            println!("Failed to create attribute {} in {}: status {}, body {}", attr_key, col_id, status, res.text().await.unwrap_or_default());
+                        }
+                    }
+                    Err(e) => println!("Error creating attribute {} in {}: {:?}", attr_key, col_id, e),
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn get_document(&self, collection: &str, doc_id: &str) -> std::result::Result<Option<serde_json::Value>, reqwest::Error> {
+        let url = format!("{}/databases/{}/collections/{}/documents/{}", self.endpoint, self.database_id, collection, doc_id);
+        let res = self.client.get(&url)
+            .header("X-Appwrite-Project", &self.project_id)
+            .header("X-Appwrite-Key", &self.api_key)
+            .send()
+            .await?;
+
+        if res.status() == 404 {
+            Ok(None)
+        } else {
+            let val = res.json().await?;
+            Ok(Some(val))
+        }
+    }
+
+    async fn list_documents(&self, collection: &str, queries: &[String]) -> std::result::Result<Vec<serde_json::Value>, reqwest::Error> {
+        let url = format!("{}/databases/{}/collections/{}/documents", self.endpoint, self.database_id, collection);
+        let mut req = self.client.get(&url)
+            .header("X-Appwrite-Project", &self.project_id)
+            .header("X-Appwrite-Key", &self.api_key);
+
+        for q in queries {
+            req = req.query(&[("queries[]", q)]);
+        }
+
+        let res = req.send().await?;
+        let val: serde_json::Value = res.json().await?;
+        if let Some(arr) = val["documents"].as_array() {
+            Ok(arr.clone())
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    async fn create_document(&self, collection: &str, doc_id: &str, data: serde_json::Value) -> std::result::Result<(), reqwest::Error> {
+        let url = format!("{}/databases/{}/collections/{}/documents", self.endpoint, self.database_id, collection);
+        let _ = self.client.post(&url)
+            .header("X-Appwrite-Project", &self.project_id)
+            .header("X-Appwrite-Key", &self.api_key)
+            .json(&json!({
+                "documentId": doc_id,
+                "data": data
+            }))
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    async fn update_document(&self, collection: &str, doc_id: &str, data: serde_json::Value) -> std::result::Result<(), reqwest::Error> {
+        let url = format!("{}/databases/{}/collections/{}/documents/{}", self.endpoint, self.database_id, collection, doc_id);
+        let _ = self.client.patch(&url)
+            .header("X-Appwrite-Project", &self.project_id)
+            .header("X-Appwrite-Key", &self.api_key)
+            .json(&json!({
+                "data": data
+            }))
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_document(&self, collection: &str, doc_id: &str) -> std::result::Result<(), reqwest::Error> {
+        let url = format!("{}/databases/{}/collections/{}/documents/{}", self.endpoint, self.database_id, collection, doc_id);
+        let _ = self.client.delete(&url)
+            .header("X-Appwrite-Project", &self.project_id)
+            .header("X-Appwrite-Key", &self.api_key)
+            .send()
+            .await?;
+        Ok(())
     }
 
     pub fn get_or_create_room(&self, name: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT OR IGNORE INTO rooms (name) VALUES (?1)",
-            params![name],
-        )?;
-        Ok(())
+        run_appwrite(async {
+            match self.get_document("rooms", name).await.map_err(map_err)? {
+                Some(_) => Ok(()),
+                None => {
+                    self.create_document("rooms", name, json!({
+                        "name": name,
+                        "creator_tag": null
+                    })).await.map_err(map_err)?;
+                    Ok(())
+                }
+            }
+        })
     }
 
     pub fn get_rooms(&self) -> Result<Vec<DbRoom>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT name, creator_tag FROM rooms ORDER BY name ASC")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(DbRoom {
-                name: row.get(0)?,
-                creator_tag: row.get(1)?,
-            })
-        })?;
-        let mut rooms = Vec::new();
-        for r in rows {
-            rooms.push(r?);
-        }
-        Ok(rooms)
+        run_appwrite(async {
+            let docs = self.list_documents("rooms", &[]).await.map_err(map_err)?;
+            let mut rooms = Vec::new();
+            for d in docs {
+                rooms.push(DbRoom {
+                    name: d["name"].as_str().unwrap_or("").to_string(),
+                    creator_tag: d["creator_tag"].as_str().map(|s| s.to_string()),
+                });
+            }
+            rooms.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(rooms)
+        })
     }
 
     pub fn insert_message(&self, msg: &Message) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        
-        // Ensure room exists
-        conn.execute(
-            "INSERT OR IGNORE INTO rooms (name) VALUES (?1)",
-            params![msg.room_tag],
-        )?;
-
-        conn.execute(
-            "INSERT OR REPLACE INTO messages (
-                id, room_tag, sender_id, sender_name, msg_type, content, file_url, file_name, file_size, timestamp, status
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                msg.id,
-                msg.room_tag,
-                msg.sender_id,
-                msg.sender_name,
-                msg.msg_type,
-                msg.content,
-                msg.file_url,
-                msg.file_name,
-                msg.file_size,
-                msg.timestamp,
-                msg.status
-            ],
-        )?;
-        Ok(())
+        run_appwrite(async {
+            self.get_or_create_room(&msg.room_tag)?;
+            self.create_document("messages", &msg.id, json!({
+                "id": msg.id,
+                "room_tag": msg.room_tag,
+                "sender_id": msg.sender_id,
+                "sender_name": msg.sender_name,
+                "msg_type": msg.msg_type,
+                "content": msg.content,
+                "file_url": msg.file_url,
+                "file_name": msg.file_name,
+                "file_size": msg.file_size,
+                "timestamp": msg.timestamp,
+                "status": msg.status,
+            })).await.map_err(map_err)?;
+            Ok(())
+        })
     }
 
     pub fn get_messages(&self, room_tag: &str, limit: usize) -> Result<Vec<Message>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, room_tag, sender_id, sender_name, msg_type, content, file_url, file_name, file_size, timestamp, status 
-             FROM messages 
-             WHERE room_tag = ?1 
-             ORDER BY timestamp ASC 
-             LIMIT ?2"
-        )?;
-        
-        let rows = stmt.query_map(params![room_tag, limit], |row| {
-            Ok(Message {
-                id: row.get(0)?,
-                room_tag: row.get(1)?,
-                sender_id: row.get(2)?,
-                sender_name: row.get(3)?,
-                msg_type: row.get(4)?,
-                content: row.get(5)?,
-                file_url: row.get(6)?,
-                file_name: row.get(7)?,
-                file_size: row.get(8)?,
-                timestamp: row.get(9)?,
-                status: row.get(10)?,
-            })
-        })?;
-
-        let mut messages = Vec::new();
-        for m in rows {
-            messages.push(m?);
-        }
-        Ok(messages)
+        run_appwrite(async {
+            let queries = vec![
+                format!("equal(\"room_tag\", [\"{}\"])", room_tag),
+                "orderDesc(\"timestamp\")".to_string(),
+                format!("limit({})", limit),
+            ];
+            let docs = self.list_documents("messages", &queries).await.map_err(map_err)?;
+            let mut messages = Vec::new();
+            for d in docs {
+                messages.push(Message {
+                    id: d["id"].as_str().unwrap_or("").to_string(),
+                    room_tag: d["room_tag"].as_str().unwrap_or("").to_string(),
+                    sender_id: d["sender_id"].as_str().unwrap_or("").to_string(),
+                    sender_name: d["sender_name"].as_str().unwrap_or("").to_string(),
+                    msg_type: d["msg_type"].as_str().unwrap_or("").to_string(),
+                    content: d["content"].as_str().unwrap_or("").to_string(),
+                    file_url: d["file_url"].as_str().map(|s| s.to_string()),
+                    file_name: d["file_name"].as_str().map(|s| s.to_string()),
+                    file_size: d["file_size"].as_i64(),
+                    timestamp: d["timestamp"].as_i64().unwrap_or(0),
+                    status: d["status"].as_str().unwrap_or("").to_string(),
+                });
+            }
+            messages.reverse();
+            Ok(messages)
+        })
     }
 
     pub fn update_message_status(&self, message_id: &str, status: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        
-        // Find current status first so we don't downgrade status (e.g. from 'seen' back to 'delivered')
-        let mut stmt = conn.prepare("SELECT status FROM messages WHERE id = ?1")?;
-        let current_status: Option<String> = stmt.query_row(params![message_id], |row| row.get(0)).ok();
-        
-        if let Some(curr) = current_status {
-            // Downgrade protection: seen > delivered > sent
-            let should_update = match (curr.as_str(), status) {
-                ("seen", _) => false,
-                ("delivered", "seen") => true,
-                ("delivered", _) => false,
-                ("sent", "delivered") => true,
-                ("sent", "seen") => true,
-                _ => false,
-            };
-
-            if should_update {
-                conn.execute(
-                    "UPDATE messages SET status = ?1 WHERE id = ?2",
-                    params![status, message_id],
-                )?;
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        run_appwrite(async {
+            self.update_document("messages", message_id, json!({
+                "status": status
+            })).await.map_err(map_err)?;
+            Ok(true)
+        })
     }
 
     pub fn update_messages_status_in_room(
         &self,
         room_tag: &str,
-        exclude_sender_id: &str,
         status: &str,
-    ) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
-        
-        // Select message IDs to update
-        let mut stmt = conn.prepare(
-            "SELECT id, status FROM messages 
-             WHERE room_tag = ?1 AND sender_id != ?2"
-        )?;
-        
-        let mut ids_to_update = Vec::new();
-        let rows = stmt.query_map(params![room_tag, exclude_sender_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-
-        for r in rows {
-            let (id, curr) = r?;
-            let should_update = match (curr.as_str(), status) {
-                ("seen", _) => false,
-                ("delivered", "seen") => true,
-                ("delivered", _) => false,
-                ("sent", "delivered") => true,
-                ("sent", "seen") => true,
-                _ => false,
-            };
-            if should_update {
-                ids_to_update.push(id);
+        exclude_sender: &str,
+    ) -> Result<Vec<Message>> {
+        run_appwrite(async {
+            let queries = vec![
+                format!("equal(\"room_tag\", [\"{}\"])", room_tag),
+                "orderDesc(\"timestamp\")".to_string(),
+                "limit(100)".to_string(),
+            ];
+            let docs = self.list_documents("messages", &queries).await.map_err(map_err)?;
+            let mut updated = Vec::new();
+            for d in docs {
+                let sender_id = d["sender_id"].as_str().unwrap_or("");
+                let msg_status = d["status"].as_str().unwrap_or("");
+                let msg_id = d["id"].as_str().unwrap_or("");
+                if sender_id != exclude_sender && msg_status != status {
+                    self.update_document("messages", msg_id, json!({ "status": status })).await.map_err(map_err)?;
+                    updated.push(Message {
+                        id: msg_id.to_string(),
+                        room_tag: d["room_tag"].as_str().unwrap_or("").to_string(),
+                        sender_id: sender_id.to_string(),
+                        sender_name: d["sender_name"].as_str().unwrap_or("").to_string(),
+                        msg_type: d["msg_type"].as_str().unwrap_or("").to_string(),
+                        content: d["content"].as_str().unwrap_or("").to_string(),
+                        file_url: d["file_url"].as_str().map(|s| s.to_string()),
+                        file_name: d["file_name"].as_str().map(|s| s.to_string()),
+                        file_size: d["file_size"].as_i64(),
+                        timestamp: d["timestamp"].as_i64().unwrap_or(0),
+                        status: status.to_string(),
+                    });
+                }
             }
-        }
-
-        if !ids_to_update.is_empty() {
-            // Update them
-            for id in &ids_to_update {
-                conn.execute(
-                    "UPDATE messages SET status = ?1 WHERE id = ?2",
-                    params![status, id],
-                )?;
-            }
-        }
-
-        Ok(ids_to_update)
+            Ok(updated)
+        })
     }
 
     pub fn insert_status(&self, status: &UserStatus) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO statuses (
-                id, creator_id, creator_name, creator_avatar, media_type, media_url, text_content, timestamp
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                status.id,
-                status.creator_id,
-                status.creator_name,
-                status.creator_avatar,
-                status.media_type,
-                status.media_url,
-                status.text_content,
-                status.timestamp
-            ],
-        )?;
-        Ok(())
+        run_appwrite(async {
+            self.create_document("statuses", &status.id, json!({
+                "id": status.id,
+                "creator_id": status.creator_id,
+                "creator_name": status.creator_name,
+                "creator_avatar": status.creator_avatar,
+                "media_type": status.media_type,
+                "media_url": status.media_url,
+                "text_content": status.text_content,
+                "timestamp": status.timestamp,
+            })).await.map_err(map_err)?;
+            Ok(())
+        })
     }
 
     pub fn get_active_statuses(&self, viewer_tag: &str, expiration_ms: i64) -> Result<Vec<UserStatus>> {
-        let conn = self.conn.lock().unwrap();
-        let cutoff = chrono::Utc::now().timestamp_millis() - expiration_ms;
-        
-        let mut stmt = conn.prepare(
-            "SELECT id, creator_id, creator_name, creator_avatar, media_type, media_url, text_content, timestamp 
-             FROM statuses 
-             WHERE timestamp > ?1 
-               AND (creator_id = ?2 OR creator_id IN (
-                   SELECT user_tag FROM status_permissions WHERE viewer_tag = ?2 AND allowed = 1
-               ))
-             ORDER BY timestamp ASC"
-        )?;
+        run_appwrite(async {
+            let perm_queries = vec![
+                format!("equal(\"viewer_tag\", [\"{}\"])", viewer_tag),
+                "equal(\"allowed\", [true])".to_string(),
+            ];
+            let perm_docs = self.list_documents("status_permissions", &perm_queries).await.map_err(map_err)?;
+            let mut allowed_creators: std::collections::HashSet<String> = perm_docs.into_iter()
+                .map(|d| d["user_tag"].as_str().unwrap_or("").to_string())
+                .collect();
+            allowed_creators.insert(viewer_tag.to_string());
 
-        let rows = stmt.query_map(params![cutoff, viewer_tag], |row| {
-            Ok(UserStatus {
-                id: row.get(0)?,
-                creator_id: row.get(1)?,
-                creator_name: row.get(2)?,
-                creator_avatar: row.get(3)?,
-                media_type: row.get(4)?,
-                media_url: row.get(5)?,
-                text_content: row.get(6)?,
-                timestamp: row.get(7)?,
-            })
-        })?;
-
-        let mut statuses = Vec::new();
-        for s in rows {
-            statuses.push(s?);
-        }
-        Ok(statuses)
+            let now = chrono::Utc::now().timestamp_millis();
+            let status_queries = vec![
+                "limit(100)".to_string(),
+            ];
+            let status_docs = self.list_documents("statuses", &status_queries).await.map_err(map_err)?;
+            let mut active = Vec::new();
+            for d in status_docs {
+                let creator_id = d["creator_id"].as_str().unwrap_or("");
+                let timestamp = d["timestamp"].as_i64().unwrap_or(0);
+                if allowed_creators.contains(creator_id) && timestamp > (now - expiration_ms) {
+                    active.push(UserStatus {
+                        id: d["id"].as_str().unwrap_or("").to_string(),
+                        creator_id: creator_id.to_string(),
+                        creator_name: d["creator_name"].as_str().unwrap_or("").to_string(),
+                        creator_avatar: d["creator_avatar"].as_str().unwrap_or("").to_string(),
+                        media_type: d["media_type"].as_str().unwrap_or("").to_string(),
+                        media_url: d["media_url"].as_str().unwrap_or("").to_string(),
+                        text_content: d["text_content"].as_str().unwrap_or("").to_string(),
+                        timestamp,
+                    });
+                }
+            }
+            active.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            Ok(active)
+        })
     }
 
     pub fn create_user(&self, tag: &str, name: &str, avatar: &str, password: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        // Check if user exists
-        let mut stmt = conn.prepare("SELECT 1 FROM users WHERE tag = ?1")?;
-        let exists = stmt.exists(params![tag])?;
-        if exists {
-            return Ok(false);
-        }
-
-        let password_hash = bcrypt::hash(password, bcrypt::DEFAULT_COST).map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
-
-        conn.execute(
-            "INSERT INTO users (tag, name, avatar, password_hash) VALUES (?1, ?2, ?3, ?4)",
-            params![tag, name, avatar, password_hash],
-        )?;
-        Ok(true)
+        run_appwrite(async {
+            if self.get_document("users", tag).await.map_err(map_err)?.is_some() {
+                return Ok(false);
+            }
+            let password_hash = bcrypt::hash(password, bcrypt::DEFAULT_COST).map_err(map_err)?;
+            self.create_document("users", tag, json!({
+                "tag": tag,
+                "name": name,
+                "avatar": avatar,
+                "password_hash": password_hash,
+            })).await.map_err(map_err)?;
+            Ok(true)
+        })
     }
 
     pub fn authenticate_user(&self, tag: &str, password: &str) -> Result<Option<DbUser>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT name, avatar, password_hash FROM users WHERE tag = ?1")?;
-        
-        let res = stmt.query_row(params![tag], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-        });
-
-        match res {
-            Ok((name, avatar, hash)) => {
-                let matches = bcrypt::verify(password, &hash).map_err(|e| {
-                    rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-                })?;
-
-                if matches {
-                    Ok(Some(DbUser {
-                        tag: tag.to_string(),
-                        name,
-                        avatar,
-                    }))
-                } else {
-                    Ok(None)
+        run_appwrite(async {
+            match self.get_document("users", tag).await.map_err(map_err)? {
+                None => Ok(None),
+                Some(doc) => {
+                    let hash = doc["password_hash"].as_str().unwrap_or("");
+                    if bcrypt::verify(password, hash).unwrap_or(false) {
+                        Ok(Some(DbUser {
+                            tag: tag.to_string(),
+                            name: doc["name"].as_str().unwrap_or("").to_string(),
+                            avatar: doc["avatar"].as_str().unwrap_or("").to_string(),
+                        }))
+                    } else {
+                        Ok(None)
+                    }
                 }
             }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
+        })
     }
 
     pub fn get_all_users(&self) -> Result<Vec<DbUser>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT tag, name, avatar FROM users ORDER BY name ASC")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(DbUser {
-                tag: row.get(0)?,
-                name: row.get(1)?,
-                avatar: row.get(2)?,
-            })
-        })?;
-
-        let mut users = Vec::new();
-        for u in rows {
-            users.push(u?);
-        }
-        Ok(users)
+        run_appwrite(async {
+            let docs = self.list_documents("users", &[]).await.map_err(map_err)?;
+            let mut users = Vec::new();
+            for d in docs {
+                users.push(DbUser {
+                    tag: d["tag"].as_str().unwrap_or("").to_string(),
+                    name: d["name"].as_str().unwrap_or("").to_string(),
+                    avatar: d["avatar"].as_str().unwrap_or("").to_string(),
+                });
+            }
+            Ok(users)
+        })
     }
 
     pub fn insert_direct_message(&self, msg: &DirectMessage) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT OR REPLACE INTO direct_messages (
-                id, sender_tag, receiver_tag, msg_type, content, file_url, file_name, file_size, timestamp, status
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                msg.id,
-                msg.sender_tag,
-                msg.receiver_tag,
-                msg.msg_type,
-                msg.content,
-                msg.file_url,
-                msg.file_name,
-                msg.file_size,
-                msg.timestamp,
-                msg.status
-            ],
-        )?;
-        Ok(())
+        run_appwrite(async {
+            self.create_document("direct_messages", &msg.id, json!({
+                "id": msg.id,
+                "sender_tag": msg.sender_tag,
+                "receiver_tag": msg.receiver_tag,
+                "msg_type": msg.msg_type,
+                "content": msg.content,
+                "file_url": msg.file_url,
+                "file_name": msg.file_name,
+                "file_size": msg.file_size,
+                "timestamp": msg.timestamp,
+                "status": msg.status,
+            })).await.map_err(map_err)?;
+            Ok(())
+        })
     }
 
     pub fn get_direct_messages(&self, user1: &str, user2: &str, limit: usize) -> Result<Vec<DirectMessage>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, sender_tag, receiver_tag, msg_type, content, file_url, file_name, file_size, timestamp, status 
-             FROM direct_messages 
-             WHERE (sender_tag = ?1 AND receiver_tag = ?2) OR (sender_tag = ?2 AND receiver_tag = ?1) 
-             ORDER BY timestamp ASC 
-             LIMIT ?3"
-        )?;
+        run_appwrite(async {
+            let q1 = vec![
+                format!("equal(\"sender_tag\", [\"{}\"])", user1),
+                format!("equal(\"receiver_tag\", [\"{}\"])", user2),
+                "orderDesc(\"timestamp\")".to_string(),
+                format!("limit({})", limit),
+            ];
+            let docs1 = self.list_documents("direct_messages", &q1).await.map_err(map_err)?;
 
-        let rows = stmt.query_map(params![user1, user2, limit], |row| {
-            Ok(DirectMessage {
-                id: row.get(0)?,
-                sender_tag: row.get(1)?,
-                receiver_tag: row.get(2)?,
-                msg_type: row.get(3)?,
-                content: row.get(4)?,
-                file_url: row.get(5)?,
-                file_name: row.get(6)?,
-                file_size: row.get(7)?,
-                timestamp: row.get(8)?,
-                status: row.get(9)?,
-            })
-        })?;
+            let q2 = vec![
+                format!("equal(\"sender_tag\", [\"{}\"])", user2),
+                format!("equal(\"receiver_tag\", [\"{}\"])", user1),
+                "orderDesc(\"timestamp\")".to_string(),
+                format!("limit({})", limit),
+            ];
+            let docs2 = self.list_documents("direct_messages", &q2).await.map_err(map_err)?;
 
-        let mut messages = Vec::new();
-        for m in rows {
-            messages.push(m?);
-        }
-        Ok(messages)
+            let mut all = Vec::new();
+            for d in docs1.into_iter().chain(docs2.into_iter()) {
+                all.push(DirectMessage {
+                    id: d["id"].as_str().unwrap_or("").to_string(),
+                    sender_tag: d["sender_tag"].as_str().unwrap_or("").to_string(),
+                    receiver_tag: d["receiver_tag"].as_str().unwrap_or("").to_string(),
+                    msg_type: d["msg_type"].as_str().unwrap_or("").to_string(),
+                    content: d["content"].as_str().unwrap_or("").to_string(),
+                    file_url: d["file_url"].as_str().map(|s| s.to_string()),
+                    file_name: d["file_name"].as_str().map(|s| s.to_string()),
+                    file_size: d["file_size"].as_i64(),
+                    timestamp: d["timestamp"].as_i64().unwrap_or(0),
+                    status: d["status"].as_str().unwrap_or("").to_string(),
+                });
+            }
+
+            all.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+            if all.len() > limit {
+                let start = all.len() - limit;
+                all = all[start..].to_vec();
+            }
+            Ok(all)
+        })
     }
 
     pub fn update_direct_message_status(&self, message_id: &str, status: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT status FROM direct_messages WHERE id = ?1")?;
-        let current_status: Option<String> = stmt.query_row(params![message_id], |row| row.get(0)).ok();
-
-        if let Some(curr) = current_status {
-            let should_update = match (curr.as_str(), status) {
-                ("seen", _) => false,
-                ("delivered", "seen") => true,
-                ("delivered", _) => false,
-                ("sent", "delivered") => true,
-                ("sent", "seen") => true,
-                _ => false,
-            };
-
-            if should_update {
-                conn.execute(
-                    "UPDATE direct_messages SET status = ?1 WHERE id = ?2",
-                    params![status, message_id],
-                )?;
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        run_appwrite(async {
+            self.update_document("direct_messages", message_id, json!({
+                "status": status
+            })).await.map_err(map_err)?;
+            Ok(true)
+        })
     }
 
     pub fn update_direct_messages_seen(&self, sender: &str, receiver: &str) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, status FROM direct_messages 
-             WHERE sender_tag = ?1 AND receiver_tag = ?2 AND status != 'seen'"
-        )?;
-
-        let mut ids_to_update = Vec::new();
-        let rows = stmt.query_map(params![sender, receiver], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-
-        for r in rows {
-            let (id, _) = r?;
-            ids_to_update.push(id);
-        }
-
-        if !ids_to_update.is_empty() {
-            for id in &ids_to_update {
-                conn.execute(
-                    "UPDATE direct_messages SET status = 'seen' WHERE id = ?1",
-                    params![id],
-                )?;
+        run_appwrite(async {
+            let q = vec![
+                format!("equal(\"sender_tag\", [\"{}\"])", sender),
+                format!("equal(\"receiver_tag\", [\"{}\"])", receiver),
+                "limit(100)".to_string(),
+            ];
+            let docs = self.list_documents("direct_messages", &q).await.map_err(map_err)?;
+            let mut updated_ids = Vec::new();
+            for d in docs {
+                let status = d["status"].as_str().unwrap_or("");
+                let msg_id = d["id"].as_str().unwrap_or("");
+                if status != "seen" {
+                    self.update_document("direct_messages", msg_id, json!({ "status": "seen" })).await.map_err(map_err)?;
+                    updated_ids.push(msg_id.to_string());
+                }
             }
-        }
-
-        Ok(ids_to_update)
+            Ok(updated_ids)
+        })
     }
 
-    // --- GROUP & ROOM MANAGEMENT METHODS ---
-
     pub fn create_room(&self, name: &str, creator_tag: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT 1 FROM rooms WHERE name = ?1")?;
-        let exists = stmt.exists(params![name])?;
-        if exists {
-            return Ok(false);
-        }
-        conn.execute(
-            "INSERT INTO rooms (name, creator_tag) VALUES (?1, ?2)",
-            params![name, creator_tag],
-        )?;
-        Ok(true)
+        run_appwrite(async {
+            if self.get_document("rooms", name).await.map_err(map_err)?.is_some() {
+                return Ok(false);
+            }
+            self.create_document("rooms", name, json!({
+                "name": name,
+                "creator_tag": creator_tag
+            })).await.map_err(map_err)?;
+            Ok(true)
+        })
     }
 
     pub fn update_room(&self, old_name: &str, new_name: &str, user_tag: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        // Check authorization
-        let mut stmt = conn.prepare("SELECT creator_tag FROM rooms WHERE name = ?1")?;
-        let creator: Option<String> = stmt.query_row(params![old_name], |row| row.get(0)).optional()?.flatten();
+        run_appwrite(async {
+            let doc = match self.get_document("rooms", old_name).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(false),
+            };
 
-        if let Some(ref c) = creator {
-            if c != user_tag {
-                return Ok(false); // Unauthorized
+            let creator = doc["creator_tag"].as_str().unwrap_or("");
+            if creator != user_tag {
+                return Ok(false);
             }
-        }
 
-        // Perform rename
-        conn.execute(
-            "UPDATE rooms SET name = ?1, creator_tag = ?2 WHERE name = ?3",
-            params![new_name, user_tag, old_name],
-        )?;
-        conn.execute(
-            "UPDATE messages SET room_tag = ?1 WHERE room_tag = ?2",
-            params![new_name, old_name],
-        )?;
-        Ok(true)
+            self.delete_document("rooms", old_name).await.map_err(map_err)?;
+            self.create_document("rooms", new_name, json!({
+                "name": new_name,
+                "creator_tag": user_tag
+            })).await.map_err(map_err)?;
+
+            Ok(true)
+        })
     }
 
     pub fn delete_room(&self, name: &str, user_tag: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        // Check authorization
-        let mut stmt = conn.prepare("SELECT creator_tag FROM rooms WHERE name = ?1")?;
-        let creator: Option<String> = stmt.query_row(params![name], |row| row.get(0)).optional()?.flatten();
+        run_appwrite(async {
+            let doc = match self.get_document("rooms", name).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(false),
+            };
 
-        if let Some(ref c) = creator {
-            if c != user_tag {
-                return Ok(false); // Unauthorized
+            let creator = doc["creator_tag"].as_str().unwrap_or("");
+            if creator != user_tag {
+                return Ok(false);
             }
-        }
 
-        conn.execute("DELETE FROM rooms WHERE name = ?1", params![name])?;
-        conn.execute("DELETE FROM messages WHERE room_tag = ?1", params![name])?;
-        Ok(true)
+            self.delete_document("rooms", name).await.map_err(map_err)?;
+            Ok(true)
+        })
     }
 
-    // --- STATUS PRIVACY & PERMISSIONS METHODS ---
-
     pub fn delete_status(&self, status_id: &str, creator_tag: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn.execute(
-            "DELETE FROM statuses WHERE id = ?1 AND creator_id = ?2",
-            params![status_id, creator_tag],
-        )?;
-        Ok(rows > 0)
+        run_appwrite(async {
+            let doc = match self.get_document("statuses", status_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(false),
+            };
+
+            let creator = doc["creator_id"].as_str().unwrap_or("");
+            if creator != creator_tag {
+                return Ok(false);
+            }
+
+            self.delete_document("statuses", status_id).await.map_err(map_err)?;
+            Ok(true)
+        })
     }
 
     pub fn set_status_permission(&self, user_tag: &str, viewer_tag: &str, allowed: bool) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let allowed_int = if allowed { 1 } else { 0 };
-        conn.execute(
-            "INSERT OR REPLACE INTO status_permissions (user_tag, viewer_tag, allowed) VALUES (?1, ?2, ?3)",
-            params![user_tag, viewer_tag, allowed_int],
-        )?;
-        Ok(())
+        run_appwrite(async {
+            let doc_id = format!("{}_{}", user_tag, viewer_tag);
+            match self.get_document("status_permissions", &doc_id).await.map_err(map_err)? {
+                Some(_) => {
+                    self.update_document("status_permissions", &doc_id, json!({
+                        "allowed": allowed
+                    })).await.map_err(map_err)?;
+                }
+                None => {
+                    self.create_document("status_permissions", &doc_id, json!({
+                        "user_tag": user_tag,
+                        "viewer_tag": viewer_tag,
+                        "allowed": allowed
+                    })).await.map_err(map_err)?;
+                }
+            }
+            Ok(())
+        })
     }
 
     pub fn get_status_permission(&self, user_tag: &str, viewer_tag: &str) -> Result<Option<bool>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT allowed FROM status_permissions WHERE user_tag = ?1 AND viewer_tag = ?2")?;
-        let res: Option<i32> = stmt.query_row(params![user_tag, viewer_tag], |row| row.get(0)).optional()?;
-        Ok(res.map(|val| val == 1))
+        run_appwrite(async {
+            let doc_id = format!("{}_{}", user_tag, viewer_tag);
+            match self.get_document("status_permissions", &doc_id).await.map_err(map_err)? {
+                Some(d) => Ok(d["allowed"].as_bool()),
+                None => Ok(None)
+            }
+        })
     }
 
     pub fn get_status_permissions_list(&self, user_tag: &str) -> Result<Vec<StatusPermissionItem>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT p.viewer_tag, u.name, u.avatar, p.allowed
-             FROM status_permissions p
-             JOIN users u ON p.viewer_tag = u.tag
-             WHERE p.user_tag = ?1"
-        )?;
-        let rows = stmt.query_map(params![user_tag], |row| {
-            let allowed_int: i32 = row.get(3)?;
-            Ok(StatusPermissionItem {
-                viewer_tag: row.get(0)?,
-                username: row.get(1)?,
-                avatar: row.get(2)?,
-                allowed: allowed_int == 1,
-            })
-        })?;
-        let mut items = Vec::new();
-        for r in rows {
-            items.push(r?);
-        }
-        Ok(items)
+        run_appwrite(async {
+            let all_users = self.get_all_users()?;
+            let queries = vec![
+                format!("equal(\"user_tag\", [\"{}\"])", user_tag),
+            ];
+            let docs = self.list_documents("status_permissions", &queries).await.map_err(map_err)?;
+            
+            let mut allowed_map = std::collections::HashMap::new();
+            for d in docs {
+                let viewer = d["viewer_tag"].as_str().unwrap_or("");
+                let allowed = d["allowed"].as_bool().unwrap_or(false);
+                allowed_map.insert(viewer.to_string(), allowed);
+            }
+
+            let mut list = Vec::new();
+            for u in all_users {
+                if u.tag != user_tag {
+                    let allowed = *allowed_map.get(&u.tag).unwrap_or(&true);
+                    list.push(StatusPermissionItem {
+                        viewer_tag: u.tag,
+                        username: u.name,
+                        avatar: u.avatar,
+                        allowed,
+                    });
+                }
+            }
+            Ok(list)
+        })
     }
 
     pub fn get_chatted_user_tags(&self, user_tag: &str) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT sender_tag FROM direct_messages WHERE receiver_tag = ?1
-             UNION
-             SELECT DISTINCT receiver_tag FROM direct_messages WHERE sender_tag = ?1"
-        )?;
-        let rows = stmt.query_map(params![user_tag], |row| row.get(0))?;
-        let mut tags = Vec::new();
-        for tag in rows {
-            if let Ok(t) = tag {
-                tags.push(t);
+        run_appwrite(async {
+            let q1 = vec![
+                format!("equal(\"sender_tag\", [\"{}\"])", user_tag),
+                "limit(100)".to_string(),
+            ];
+            let docs1 = self.list_documents("direct_messages", &q1).await.map_err(map_err)?;
+
+            let q2 = vec![
+                format!("equal(\"receiver_tag\", [\"{}\"])", user_tag),
+                "limit(100)".to_string(),
+            ];
+            let docs2 = self.list_documents("direct_messages", &q2).await.map_err(map_err)?;
+
+            let mut set = std::collections::HashSet::new();
+            for d in docs1.into_iter().chain(docs2.into_iter()) {
+                let sender = d["sender_tag"].as_str().unwrap_or("");
+                let receiver = d["receiver_tag"].as_str().unwrap_or("");
+                if sender != user_tag {
+                    set.insert(sender.to_string());
+                }
+                if receiver != user_tag {
+                    set.insert(receiver.to_string());
+                }
             }
+            Ok(set.into_iter().collect())
+        })
+    }
+
+    pub fn upload_file(&self, bytes: &[u8], filename: &str) -> Result<String> {
+        let url = format!("{}/storage/buckets/{}/files", self.endpoint, self.bucket_id);
+        let form = reqwest::multipart::Form::new()
+            .text("fileId", "unique()")
+            .part("file", reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(filename.to_string()));
+
+        let res = block_on(async {
+            self.client.post(&url)
+                .header("X-Appwrite-Project", &self.project_id)
+                .header("X-Appwrite-Key", &self.api_key)
+                .multipart(form)
+                .send()
+                .await
+        }).map_err(map_err)?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = block_on(async { res.text().await }).unwrap_or_default();
+            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError(format!("Appwrite upload failed: status {}, body {}", status, body)))));
         }
-        Ok(tags)
+
+        let json: serde_json::Value = block_on(async { res.json().await }).map_err(map_err)?;
+        let file_id = json["$id"].as_str().ok_or_else(|| rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError("Missing file $id".to_string()))))?;
+
+        let public_url = format!("{}/storage/buckets/{}/files/{}/view?project={}", self.endpoint, self.bucket_id, file_id, self.project_id);
+        Ok(public_url)
     }
 }

@@ -14,3 +14,6 @@ socketioxide = "0.18.3"
 tokio = { version = "1.52.3", features = ["full"] }
 tower-http = { version = "0.6.11", features = ["fs", "cors"] }
 uuid = { version = "1.23.3", features = ["v4", "serde"] }
+reqwest = { version = "0.12.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+dotenvy = "0.15.7"
+
