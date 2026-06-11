@@ -871,6 +871,36 @@ impl Db {
         })
     }
 
+    pub fn update_direct_messages_delivered(&self, receiver_tag: &str) -> Result<Vec<DirectMessage>> {
+        run_appwrite(async {
+            let q = vec![
+                json!({ "method": "equal", "attribute": "receiver_tag", "values": [receiver_tag] }).to_string(),
+                json!({ "method": "equal", "attribute": "status", "values": ["sent"] }).to_string(),
+                json!({ "method": "limit", "values": [100] }).to_string(),
+            ];
+            let docs = self.list_documents("direct_messages", &q).await.map_err(map_err)?;
+            let mut updated = Vec::new();
+            for d in docs {
+                let msg_id = d["id"].as_str().unwrap_or("").to_string();
+                self.update_document("direct_messages", &msg_id, json!({ "status": "delivered" })).await.map_err(map_err)?;
+                
+                updated.push(DirectMessage {
+                    id: msg_id,
+                    sender_tag: d["sender_tag"].as_str().unwrap_or("").to_string(),
+                    receiver_tag: d["receiver_tag"].as_str().unwrap_or("").to_string(),
+                    msg_type: d["msg_type"].as_str().unwrap_or("").to_string(),
+                    content: d["content"].as_str().unwrap_or("").to_string(),
+                    file_url: d["file_url"].as_str().map(|s| s.to_string()),
+                    file_name: d["file_name"].as_str().map(|s| s.to_string()),
+                    file_size: d["file_size"].as_i64(),
+                    timestamp: d["timestamp"].as_i64().unwrap_or(0),
+                    status: "delivered".to_string(),
+                });
+            }
+            Ok(updated)
+        })
+    }
+
     pub fn update_direct_messages_seen(&self, sender: &str, receiver: &str) -> Result<Vec<String>> {
         run_appwrite(async {
             let q = vec![

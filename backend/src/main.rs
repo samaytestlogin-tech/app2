@@ -157,8 +157,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // A. Register Socket Event (maps unique tag to socket)
             let reg_clone = registry.clone();
+            let db_for_reg = db.clone();
             socket.on("register_socket", move |socket: SocketRef, Data(payload): Data<serde_json::Value>| {
                 let reg = reg_clone.clone();
+                let db = db_for_reg.clone();
                 async move {
                     if let Some(user_tag) = payload.get("user_tag").and_then(|t| t.as_str()) {
                         let tag = user_tag.to_string();
@@ -169,6 +171,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         
                         // Broadcast online notification
                         let _ = socket.broadcast().emit("user_online", &serde_json::json!({ "tag": tag })).await;
+
+                        // Mark all pending sent direct messages as delivered
+                        if let Ok(updated_msgs) = db.update_direct_messages_delivered(&tag) {
+                            for msg in updated_msgs {
+                                if let Some(sender_sock) = r.get(&msg.sender_tag) {
+                                    let _ = sender_sock.emit("direct_msg_status_update", &serde_json::json!({
+                                        "id": msg.id,
+                                        "status": "delivered",
+                                        "sender_tag": msg.sender_tag,
+                                        "receiver_tag": msg.receiver_tag,
+                                    }));
+                                }
+                            }
+                        }
                     }
                 }
             });
