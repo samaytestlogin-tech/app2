@@ -16,6 +16,26 @@ interface ChatRoomProps {
   onStartCall?: (target: User) => void;
 }
 
+const formatMessageDate = (timestamp: number) => {
+  const date = new Date(timestamp);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  if (date.toDateString() === today.toDateString()) {
+    return 'Today';
+  } else if (date.toDateString() === yesterday.toDateString()) {
+    return 'Yesterday';
+  } else {
+    return date.toLocaleDateString([], {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  }
+};
+
 export const ChatRoom: React.FC<ChatRoomProps> = ({
   currentUser,
   activeTag,
@@ -365,7 +385,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
 
       {/* Messages Feed */}
       <div className="chat-messages">
-        {activeMessages.map((msg) => {
+        {activeMessages.map((msg, index) => {
           const isOutgoing = isDirect
             ? (msg as DirectMessage).sender_tag === currentUser.tag
             : (msg as Message).sender_id === currentUser.tag;
@@ -379,68 +399,80 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
             minute: '2-digit',
           });
 
+          // Determine if we need to show a date separator
+          const prevMsg = index > 0 ? activeMessages[index - 1] : null;
+          const showDateSeparator = !prevMsg || 
+            new Date(msg.timestamp).toDateString() !== new Date(prevMsg.timestamp).toDateString();
+
           return (
-            <div
-              key={msg.id}
-              className={`message-row ${isOutgoing ? 'outgoing' : 'incoming'}`}
-            >
-              {!isOutgoing && !isDirect && <div className="message-sender">{senderName}</div>}
+            <React.Fragment key={msg.id}>
+              {showDateSeparator && (
+                <div className="date-separator">
+                  <span>{formatMessageDate(msg.timestamp)}</span>
+                </div>
+              )}
               
-              <div className="message-bubble">
-                {/* 1. Text Message */}
-                {msg.msg_type === 'text' && <div>{msg.content}</div>}
+              <div
+                className={`message-row ${isOutgoing ? 'outgoing' : 'incoming'}`}
+              >
+                {!isOutgoing && !isDirect && <div className="message-sender">{senderName}</div>}
+                
+                <div className="message-bubble">
+                  {/* 1. Text Message */}
+                  {msg.msg_type === 'text' && <div>{msg.content}</div>}
 
-                {/* 2. Photo Message */}
-                {msg.msg_type === 'photo' && msg.file_url && (
-                  <img
-                    src={getUploadUrl(msg.file_url)}
-                    alt="attachment"
-                    className="media-message-photo"
-                    onClick={() => setSelectedPhoto(getUploadUrl(msg.file_url))}
-                  />
-                )}
-
-                {/* 3. Audio Message (Voice Note) */}
-                {msg.msg_type === 'audio' && msg.file_url && (
-                  <CustomAudioMessage url={getUploadUrl(msg.file_url)} />
-                )}
-
-                {/* 4. File Attachment Message */}
-                {msg.msg_type === 'file' && msg.file_url && (
-                  <a
-                    href={getUploadUrl(msg.file_url)}
-                    download={msg.file_name}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="media-message-file"
-                  >
-                    <div className="file-icon-wrapper">
-                      <FileText size={20} />
-                    </div>
-                    <div className="file-info">
-                      <div className="file-name">{msg.file_name}</div>
-                      <div className="file-size">
-                        {msg.file_size ? `${(msg.file_size / 1024).toFixed(1)} KB` : 'Unknown size'}
-                      </div>
-                    </div>
-                    <Download size={16} style={{ color: 'var(--text-muted)', marginLeft: '8px' }} />
-                  </a>
-                )}
-
-                {/* Metadata & Status checkmarks */}
-                <div className="message-meta">
-                  <span>{timeString}</span>
-                  {isOutgoing && (
-                    <span className={`message-status ${msg.status}`}>
-                      {msg.status === 'sent' && <Check className="checkmark-icon" />}
-                      {(msg.status === 'delivered' || msg.status === 'seen') && (
-                        <CheckCheck className={`checkmark-icon ${msg.status === 'seen' ? 'seen' : ''}`} />
-                      )}
-                    </span>
+                  {/* 2. Photo Message */}
+                  {msg.msg_type === 'photo' && msg.file_url && (
+                    <img
+                      src={getUploadUrl(msg.file_url)}
+                      alt="attachment"
+                      className="media-message-photo"
+                      onClick={() => setSelectedPhoto(getUploadUrl(msg.file_url))}
+                    />
                   )}
+
+                  {/* 3. Audio Message (Voice Note) */}
+                  {msg.msg_type === 'audio' && msg.file_url && (
+                    <CustomAudioMessage url={getUploadUrl(msg.file_url)} />
+                  )}
+
+                  {/* 4. File Attachment Message */}
+                  {msg.msg_type === 'file' && msg.file_url && (
+                    <a
+                      href={getUploadUrl(msg.file_url)}
+                      download={msg.file_name}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="media-message-file"
+                    >
+                      <div className="file-icon-wrapper">
+                        <FileText size={20} />
+                      </div>
+                      <div className="file-info">
+                        <div className="file-name">{msg.file_name}</div>
+                        <div className="file-size">
+                          {msg.file_size ? `${(msg.file_size / 1024).toFixed(1)} KB` : 'Unknown size'}
+                        </div>
+                      </div>
+                      <Download size={16} style={{ color: 'var(--text-muted)', marginLeft: '8px' }} />
+                    </a>
+                  )}
+
+                  {/* Metadata & Status checkmarks */}
+                  <div className="message-meta">
+                    <span>{timeString}</span>
+                    {isOutgoing && (
+                      <span className={`message-status ${msg.status}`}>
+                        {msg.status === 'sent' && <Check className="checkmark-icon" />}
+                        {(msg.status === 'delivered' || msg.status === 'seen') && (
+                          <CheckCheck className={`checkmark-icon ${msg.status === 'seen' ? 'seen' : ''}`} />
+                        )}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
+            </React.Fragment>
           );
         })}
         <div ref={messagesEndRef} />

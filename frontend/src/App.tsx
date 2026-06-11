@@ -363,12 +363,94 @@ function App() {
     socket.connect();
   };
 
+  const subscribeToPushNotifications = async (userTag: string) => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      console.warn('Push notifications not supported on this browser.');
+      return;
+    }
+
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      
+      let subscription = await registration.pushManager.getSubscription();
+      
+      if (!subscription) {
+        const res = await fetch(`${BACKEND_URL.replace(/\/$/, '')}/api/push/public-key`);
+        const { publicKey } = await res.json();
+        
+        const base64 = publicKey.replace(/-/g, '+').replace(/_/g, '/');
+        const rawData = window.atob(base64);
+        const outputArray = new Uint8Array(rawData.length);
+        for (let i = 0; i < rawData.length; ++i) {
+          outputArray[i] = rawData.charCodeAt(i);
+        }
+        
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: outputArray
+        });
+      }
+      
+      await fetch(`${BACKEND_URL.replace(/\/$/, '')}/api/push/subscribe`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          user_tag: userTag,
+          subscription: subscription.toJSON()
+        })
+      });
+      
+      console.log('Push subscription registered successfully!');
+    } catch (err) {
+      console.error('Failed to subscribe to push notifications:', err);
+    }
+  };
+
+  // Check URL parameters for call action on startup
+  useEffect(() => {
+    if (currentUser) {
+      const params = new URLSearchParams(window.location.search);
+      const action = params.get('action');
+      const caller = params.get('caller');
+      const offerStr = params.get('offer');
+      if (action === 'answer' && caller && offerStr) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+        
+        try {
+          const offer = JSON.parse(decodeURIComponent(offerStr));
+          
+          setTimeout(() => {
+            setCallState('ringing');
+            setCallUserTag(caller);
+            incomingOfferRef.current = offer;
+            
+            const callerUser = allUsersRef.current.find(u => u.tag === caller);
+            if (callerUser) {
+              setCallUserName(callerUser.username);
+              setCallUserAvatar(callerUser.avatar);
+            } else {
+              setCallUserName(caller);
+              setCallUserAvatar('🦊');
+            }
+            
+            acceptCall();
+          }, 1500);
+        } catch (e) {
+          console.error('Error parsing offer from query params:', e);
+        }
+      }
+    }
+  }, [currentUser]);
+
   // Socket event handlers
   useEffect(() => {
     if (!currentUser) return;
 
     fetchChattedUsers(currentUser.tag);
     fetchChatSummary(currentUser.tag);
+    subscribeToPushNotifications(currentUser.tag);
 
     const handleConnect = () => {
       console.log('Socket connected, registering user tag:', currentUser.tag);
@@ -560,7 +642,7 @@ function App() {
         statusUpdatesRef.current[id] = 'seen';
       });
 
-      if (activeDirectUser && data.receiver_tag === currentUser.tag && data.sender_tag === activeDirectUser.tag) {
+      if (activeDirectUser && data.sender_tag === currentUser.tag && data.receiver_tag === activeDirectUser.tag) {
         setDirectMessages((prev) =>
           prev.map((msg) =>
             data.message_ids.includes(msg.id) ? { ...msg, status: 'seen' as const } : msg

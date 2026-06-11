@@ -358,18 +358,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let r = reg.lock().await;
                     let receiver_socket = r.get(&payload.receiver_tag);
 
+                    let is_offline = receiver_socket.is_none();
                     if receiver_socket.is_some() {
                         msg.status = "delivered".to_string();
                     }
 
                     match db.insert_direct_message(&msg) {
                         Ok(_) => {
-                            // Deliver real-time to receiver
                             if let Some(sock) = receiver_socket {
                                 let _ = sock.emit("new_direct_msg", &msg);
                             }
-                            // Send confirmation to sender
                             socket.emit("direct_msg_sent", &msg).ok();
+
+                            if is_offline {
+                                send_web_push(
+                                    &msg.receiver_tag,
+                                    &format!("New message from @{}", msg.sender_tag),
+                                    &msg.content,
+                                    "new_direct_msg",
+                                    serde_json::to_value(&msg).unwrap_or(serde_json::Value::Null)
+                                );
+                            }
                         }
                         Err(e) => {
                             eprintln!("Error inserting direct message: {:?}", e);
@@ -514,12 +523,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         payload.get("receiver_tag").and_then(|v| v.as_str()),
                         payload.get("offer")
                     ) {
+                        let caller_tag = payload.get("caller_tag").and_then(|v| v.as_str()).unwrap_or("");
+                        let caller_name = payload.get("caller_name").and_then(|v| v.as_str()).unwrap_or("Someone");
+                        let caller_avatar = payload.get("caller_avatar").and_then(|v| v.as_str()).unwrap_or("");
+
+                        // Trigger Web Push Notification for Call (wakes up receiver PWA)
+                        send_web_push(
+                            receiver_tag,
+                            &format!("📞 Incoming Call from {}", caller_name),
+                            &format!("@{} is calling you...", caller_tag),
+                            "incoming_call",
+                            serde_json::json!({
+                                "caller_tag": caller_tag,
+                                "caller_name": caller_name,
+                                "caller_avatar": caller_avatar,
+                                "offer": offer
+                            })
+                        );
+
                         let r = reg.lock().await;
                         if let Some(target_socket) = r.get(receiver_tag) {
                             let _ = target_socket.emit("incoming_call", &serde_json::json!({
-                                "caller_tag": payload.get("caller_tag").and_then(|v| v.as_str()).unwrap_or(""),
-                                "caller_name": payload.get("caller_name").and_then(|v| v.as_str()).unwrap_or(""),
-                                "caller_avatar": payload.get("caller_avatar").and_then(|v| v.as_str()).unwrap_or(""),
+                                "caller_tag": caller_tag,
+                                "caller_name": caller_name,
+                                "caller_avatar": caller_avatar,
                                 "offer": offer
                             }));
                         }
@@ -629,6 +656,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/users", get(get_users))
         .route("/api/users/chatted", get(get_chatted_users))
         .route("/api/chats/summary", get(get_chat_summary))
+        .route("/api/push/subscribe", post(subscribe_push))
+        .route("/api/push/public-key", get(get_push_public_key))
         .nest_service("/uploads", ServeDir::new("uploads"))
         .with_state(app_state)
         .layer(layer)
@@ -890,3 +919,97 @@ async fn check_permission_route(
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
+
+// ----------------------------------------------------
+// Web Push Notifications via Node helper & SQLite
+// ----------------------------------------------------
+#[derive(Debug, serde::Deserialize)]
+struct SubscribePushPayload {
+    user_tag: String,
+    subscription: serde_json::Value,
+}
+
+async fn subscribe_push(
+    Json(payload): Json<SubscribePushPayload>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sub_str = payload.subscription.to_string();
+    if save_subscription(&payload.user_tag, &sub_str).is_ok() {
+        Ok(Json(serde_json::json!({ "status": "success" })))
+    } else {
+        Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
+}
+
+async fn get_push_public_key() -> Json<serde_json::Value> {
+    let key = "BKLtvWU6Ub89F667k8bmXw4ngUdHYY__aU7a8ZdpLRBAARHBWDaSzu8TBFWqOnMvCVHJ_YNhmx3Rlpz6Z94TqIU";
+    Json(serde_json::json!({ "publicKey": key }))
+}
+
+fn get_subscription(user_tag: &str) -> Result<Option<String>, rusqlite::Error> {
+    let conn = rusqlite::Connection::open("push_subscriptions.db")?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS subscriptions (
+            user_tag TEXT PRIMARY KEY,
+            subscription_json TEXT
+        )",
+        [],
+    )?;
+    let mut stmt = conn.prepare("SELECT subscription_json FROM subscriptions WHERE user_tag = ?1")?;
+    let mut rows = stmt.query([user_tag])?;
+    if let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        Ok(Some(json))
+    } else {
+        Ok(None)
+    }
+}
+
+fn save_subscription(user_tag: &str, subscription_json: &str) -> Result<(), rusqlite::Error> {
+    let conn = rusqlite::Connection::open("push_subscriptions.db")?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS subscriptions (
+            user_tag TEXT PRIMARY KEY,
+            subscription_json TEXT
+        )",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR REPLACE INTO subscriptions (user_tag, subscription_json) VALUES (?1, ?2)",
+        [user_tag, subscription_json],
+    )?;
+    Ok(())
+}
+
+fn send_web_push(receiver_tag: &str, title: &str, body: &str, data_type: &str, extra_data: serde_json::Value) {
+    let receiver = receiver_tag.to_string();
+    let t = title.to_string();
+    let b = body.to_string();
+    let dtype = data_type.to_string();
+    
+    tokio::task::spawn_blocking(move || {
+        if let Ok(Some(sub_json)) = get_subscription(&receiver) {
+            let payload = serde_json::json!({
+                "title": t,
+                "body": b,
+                "type": dtype,
+                "data": extra_data
+            }).to_string();
+            
+            let status = std::process::Command::new("node")
+                .arg("send_push.js")
+                .arg(&sub_json)
+                .arg(&payload)
+                .status();
+                
+            match status {
+                Ok(s) if s.success() => {
+                    println!("Push notification sent successfully to {}", receiver);
+                }
+                other => {
+                    eprintln!("Failed to send push notification to {}: {:?}", receiver, other);
+                }
+            }
+        }
+    });
+}
+
