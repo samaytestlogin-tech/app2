@@ -196,9 +196,9 @@ function App() {
     }
   };
 
-  const acceptCall = async () => {
-    if (!currentUser || !callUserTag || !incomingOfferRef.current) return;
-    const callerTag = callUserTag;
+  const acceptCall = async (overrideCallerTag?: any) => {
+    const callerTag = typeof overrideCallerTag === 'string' ? overrideCallerTag : callUserTag;
+    if (!currentUser || !callerTag || !incomingOfferRef.current) return;
     const offer = incomingOfferRef.current;
 
     if (audioEffectsRef.current) {
@@ -415,14 +415,13 @@ function App() {
       const action = params.get('action');
       const caller = params.get('caller');
       const offerStr = params.get('offer');
-      if (action === 'answer' && caller && offerStr) {
+      if ((action === 'answer' || action === 'ringing') && caller && offerStr) {
         window.history.replaceState({}, document.title, window.location.pathname);
         
         try {
           const offer = JSON.parse(decodeURIComponent(offerStr));
           
           setTimeout(() => {
-            setCallState('ringing');
             setCallUserTag(caller);
             incomingOfferRef.current = offer;
             
@@ -435,7 +434,15 @@ function App() {
               setCallUserAvatar('🦊');
             }
             
-            acceptCall();
+            setCallState('ringing');
+            
+            if (action === 'answer') {
+              acceptCall(caller);
+            } else {
+              if (audioEffectsRef.current) {
+                audioEffectsRef.current.playRingTone();
+              }
+            }
           }, 1500);
         } catch (e) {
           console.error('Error parsing offer from query params:', e);

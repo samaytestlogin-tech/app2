@@ -82,13 +82,15 @@ self.addEventListener('push', (e) => {
       icon: '/icons/icon-192.png',
       badge: '/favicon.svg',
       data: payload,
-      vibrate: [200, 100, 200, 100, 200, 100, 200],
+      vibrate: [200, 100, 200, 100, 200],
       tag: payload.type === 'incoming_call' ? 'antigravity-call' : 'antigravity-message',
       renotify: true,
     };
 
     if (payload.type === 'incoming_call') {
       options.requireInteraction = true;
+      // Vibrates for 1 second, pauses for 0.5 seconds, repeatedly (resembles phone ringtone)
+      options.vibrate = [1000, 500, 1000, 500, 1000, 500, 1000, 500, 1000, 500, 1000];
       options.actions = [
         { action: 'answer', title: 'Answer' },
         { action: 'decline', title: 'Decline' }
@@ -121,10 +123,13 @@ self.addEventListener('notificationclick', (e) => {
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
       let targetUrl = '/';
-      if (payload && payload.type === 'incoming_call' && action === 'answer') {
+      
+      // If we clicked the call notification (either the Accept button or the notification body)
+      if (payload && payload.type === 'incoming_call') {
         const callerTag = payload.data.caller_tag;
         const offer = payload.data.offer;
-        targetUrl = `/?action=answer&caller=${callerTag}&offer=${encodeURIComponent(JSON.stringify(offer))}`;
+        const callAction = action === 'answer' ? 'answer' : 'ringing';
+        targetUrl = `/?action=${callAction}&caller=${callerTag}&offer=${encodeURIComponent(JSON.stringify(offer))}`;
       }
 
       if (clientList.length > 0) {
