@@ -906,7 +906,8 @@ impl Db {
             let q = vec![
                 json!({ "method": "equal", "attribute": "sender_tag", "values": [sender] }).to_string(),
                 json!({ "method": "equal", "attribute": "receiver_tag", "values": [receiver] }).to_string(),
-                json!({ "method": "limit", "values": [100] }).to_string(),
+                json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
+                json!({ "method": "limit", "values": [1000] }).to_string(),
             ];
             let docs = self.list_documents("direct_messages", &q).await.map_err(map_err)?;
             let mut updated_ids = Vec::new();

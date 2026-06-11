@@ -43,6 +43,8 @@ function App() {
     allUsersRef.current = allUsers;
   }, [allUsers]);
 
+  const statusUpdatesRef = useRef<Record<string, 'sent' | 'delivered' | 'seen'>>({});
+
   const triggerNotification = (title: string, body: string, tag?: string) => {
     if ('Notification' in window && Notification.permission === 'granted') {
       const options = {
@@ -529,10 +531,13 @@ function App() {
         [msg.receiver_tag]: msg.timestamp,
       }));
 
+      const finalStatus = statusUpdatesRef.current[msg.id] || msg.status;
+      const finalMsg = { ...msg, status: finalStatus };
+
       if (activeDirectUser && msg.receiver_tag === activeDirectUser.tag) {
         setDirectMessages((prev) => {
           if (prev.some(d => d.id === msg.id)) return prev;
-          return [...prev, msg];
+          return [...prev, finalMsg];
         });
       }
 
@@ -543,12 +548,18 @@ function App() {
     });
 
     socket.on('direct_msg_status_update', (data: { id: string; status: 'delivered' | 'seen'; sender_tag: string }) => {
+      statusUpdatesRef.current[data.id] = data.status;
+
       setDirectMessages((prev) =>
         prev.map((msg) => (msg.id === data.id ? { ...msg, status: data.status } : msg))
       );
     });
 
     socket.on('direct_messages_seen', (data: { sender_tag: string; receiver_tag: string; message_ids: string[] }) => {
+      data.message_ids.forEach((id) => {
+        statusUpdatesRef.current[id] = 'seen';
+      });
+
       if (activeDirectUser && data.receiver_tag === currentUser.tag && data.sender_tag === activeDirectUser.tag) {
         setDirectMessages((prev) =>
           prev.map((msg) =>
