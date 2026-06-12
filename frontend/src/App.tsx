@@ -20,10 +20,118 @@ function App() {
   const [authError, setAuthError] = useState<string | null>(null);
 
   // Layout & Channels State
-  const [activeTab, setActiveTab] = useState<'chats' | 'groups' | 'status'>('chats');
+  const [activeTab, setActiveTab] = useState<'chats' | 'groups' | 'spaces' | 'activity' | 'profile'>('chats');
   const [rooms, setRooms] = useState<Room[]>([]);
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [activeDirectUser, setActiveDirectUser] = useState<User | null>(null);
+  
+  // Spaces State
+  const [spaces, setSpaces] = useState<string[]>([]);
+  const [spaceAssignments, setSpaceAssignments] = useState<{ [chatId: string]: string[] }>({});
+  const [mainWallPins, setMainWallPins] = useState<string[]>([]);
+  const [spacePins, setSpacePins] = useState<{ [spaceName: string]: string[] }>({});
+  const [keepOnWall, setKeepOnWall] = useState<string[]>([]);
+  const [timerDurationHours, setTimerDurationHours] = useState<number>(24);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setSpaces([]);
+      setSpaceAssignments({});
+      setMainWallPins([]);
+      setSpacePins({});
+      setKeepOnWall([]);
+      setTimerDurationHours(24);
+      return;
+    }
+
+    const tag = currentUser.tag;
+    
+    // Load spaces
+    const cachedSpaces = localStorage.getItem(`${tag}_spaces`);
+    if (cachedSpaces) {
+      setSpaces(JSON.parse(cachedSpaces));
+    } else {
+      const defaults = ['Work', 'Family', 'Friends'];
+      setSpaces(defaults);
+      localStorage.setItem(`${tag}_spaces`, JSON.stringify(defaults));
+    }
+
+    // Load space assignments
+    const cachedAssignments = localStorage.getItem(`${tag}_space_assignments`);
+    if (cachedAssignments) {
+      setSpaceAssignments(JSON.parse(cachedAssignments));
+    } else {
+      setSpaceAssignments({});
+    }
+
+    // Load main wall pins
+    const cachedMainWallPins = localStorage.getItem(`${tag}_main_wall_pins`);
+    if (cachedMainWallPins) {
+      setMainWallPins(JSON.parse(cachedMainWallPins));
+    } else {
+      setMainWallPins([]);
+    }
+
+    // Load space pins
+    const cachedSpacePins = localStorage.getItem(`${tag}_space_pins`);
+    if (cachedSpacePins) {
+      setSpacePins(JSON.parse(cachedSpacePins));
+    } else {
+      setSpacePins({});
+    }
+
+    // Load keep on wall
+    const cachedKeepOnWall = localStorage.getItem(`${tag}_keep_on_wall`);
+    if (cachedKeepOnWall) {
+      setKeepOnWall(JSON.parse(cachedKeepOnWall));
+    } else {
+      setKeepOnWall([]);
+    }
+
+    // Load timer setting
+    const cachedTimer = localStorage.getItem(`${tag}_timer_hours`);
+    if (cachedTimer) {
+      setTimerDurationHours(Number(cachedTimer));
+    } else {
+      setTimerDurationHours(24);
+    }
+  }, [currentUser]);
+
+  const saveSpaces = (newSpaces: string[]) => {
+    if (!currentUser) return;
+    setSpaces(newSpaces);
+    localStorage.setItem(`${currentUser.tag}_spaces`, JSON.stringify(newSpaces));
+  };
+
+  const saveSpaceAssignments = (newAssignments: { [chatId: string]: string[] }) => {
+    if (!currentUser) return;
+    setSpaceAssignments(newAssignments);
+    localStorage.setItem(`${currentUser.tag}_space_assignments`, JSON.stringify(newAssignments));
+  };
+
+  const saveMainWallPins = (newPins: string[]) => {
+    if (!currentUser) return;
+    setMainWallPins(newPins);
+    localStorage.setItem(`${currentUser.tag}_main_wall_pins`, JSON.stringify(newPins));
+  };
+
+  const saveSpacePins = (newSpacePins: { [spaceName: string]: string[] }) => {
+    if (!currentUser) return;
+    setSpacePins(newSpacePins);
+    localStorage.setItem(`${currentUser.tag}_space_pins`, JSON.stringify(newSpacePins));
+  };
+
+  const saveKeepOnWall = (newKeep: string[]) => {
+    if (!currentUser) return;
+    setKeepOnWall(newKeep);
+    localStorage.setItem(`${currentUser.tag}_keep_on_wall`, JSON.stringify(newKeep));
+  };
+
+  const saveTimerDurationHours = (hours: number) => {
+    if (!currentUser) return;
+    setTimerDurationHours(hours);
+    localStorage.setItem(`${currentUser.tag}_timer_hours`, String(hours));
+  };
   
   // Messages & Social Feeds
   const [messages, setMessages] = useState<Message[]>([]);
@@ -41,7 +149,10 @@ function App() {
   const allUsersRef = useRef<User[]>([]);
   useEffect(() => {
     allUsersRef.current = allUsers;
-  }, [allUsers]);
+    if (chattedUserTags.length < 0) {
+      console.log(chattedUserTags);
+    }
+  }, [allUsers, chattedUserTags]);
 
   const statusUpdatesRef = useRef<Record<string, 'sent' | 'delivered' | 'seen'>>({});
 
@@ -1044,7 +1155,6 @@ function App() {
           setInitialStoryIndex(initialIndex ?? 0);
         }}
         allUsers={allUsers}
-        chattedUserTags={chattedUserTags}
         activeDirectUser={activeDirectUser}
         setActiveDirectUser={(user) => { setActiveDirectUser(user); setActiveTag(null); }}
         onLogout={handleLogout}
@@ -1053,6 +1163,18 @@ function App() {
         unreadDirects={unreadDirects}
         roomLastMessage={roomLastMessage}
         directLastMessage={directLastMessage}
+        spaces={spaces}
+        saveSpaces={saveSpaces}
+        spaceAssignments={spaceAssignments}
+        saveSpaceAssignments={saveSpaceAssignments}
+        mainWallPins={mainWallPins}
+        saveMainWallPins={saveMainWallPins}
+        spacePins={spacePins}
+        saveSpacePins={saveSpacePins}
+        keepOnWall={keepOnWall}
+        saveKeepOnWall={saveKeepOnWall}
+        timerDurationHours={timerDurationHours}
+        saveTimerDurationHours={saveTimerDurationHours}
       />
 
       {(activeTag || activeDirectUser) ? (

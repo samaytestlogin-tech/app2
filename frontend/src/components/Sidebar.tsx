@@ -1,12 +1,28 @@
 import React, { useState, useEffect } from 'react';
-import { MessageSquare, Users, Plus, Search, Image, LogOut, Edit3, Trash2, Settings, Eye, EyeOff } from 'lucide-react';
+import { 
+  MessageSquare, 
+  Users, 
+  Plus, 
+  Search, 
+  Image, 
+  LogOut, 
+  Edit3, 
+  Trash2, 
+  Settings, 
+  Eye, 
+  EyeOff, 
+  FolderPlus, 
+  Pin, 
+  PinOff, 
+  Clock 
+} from 'lucide-react';
 import type { User, UserStatus, Room, StatusPermission } from '../types';
 import { socket, BACKEND_URL } from '../socket';
 
 interface SidebarProps {
   currentUser: User;
-  activeTab: 'chats' | 'groups' | 'status';
-  setActiveTab: (tab: 'chats' | 'groups' | 'status') => void;
+  activeTab: 'chats' | 'groups' | 'spaces' | 'activity' | 'profile';
+  setActiveTab: (tab: 'chats' | 'groups' | 'spaces' | 'activity' | 'profile') => void;
   rooms: Room[];
   activeTag: string | null;
   setActiveTag: (tag: string | null) => void;
@@ -15,7 +31,6 @@ interface SidebarProps {
   onOpenStatusModal: () => void;
   onSelectUserStatus: (userId: string, initialIndex?: number) => void;
   allUsers: User[];
-  chattedUserTags: string[];
   activeDirectUser: User | null;
   setActiveDirectUser: (user: User | null) => void;
   onLogout: () => void;
@@ -24,6 +39,19 @@ interface SidebarProps {
   unreadDirects: { [userTag: string]: number };
   roomLastMessage: { [roomTag: string]: number };
   directLastMessage: { [userTag: string]: number };
+  // Spaces props
+  spaces: string[];
+  saveSpaces: (spaces: string[]) => void;
+  spaceAssignments: { [chatId: string]: string[] };
+  saveSpaceAssignments: (assignments: { [chatId: string]: string[] }) => void;
+  mainWallPins: string[];
+  saveMainWallPins: (pins: string[]) => void;
+  spacePins: { [spaceName: string]: string[] };
+  saveSpacePins: (spacePins: { [spaceName: string]: string[] }) => void;
+  keepOnWall: string[];
+  saveKeepOnWall: (keep: string[]) => void;
+  timerDurationHours: number;
+  saveTimerDurationHours: (hours: number) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -38,7 +66,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenStatusModal,
   onSelectUserStatus,
   allUsers,
-  chattedUserTags,
   activeDirectUser,
   setActiveDirectUser,
   onLogout,
@@ -47,10 +74,43 @@ export const Sidebar: React.FC<SidebarProps> = ({
   unreadDirects,
   roomLastMessage,
   directLastMessage,
+  spaces,
+  saveSpaces,
+  spaceAssignments,
+  saveSpaceAssignments,
+  mainWallPins,
+  saveMainWallPins,
+  spacePins,
+  saveSpacePins,
+  keepOnWall,
+  saveKeepOnWall,
+  timerDurationHours,
+  saveTimerDurationHours,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [newTag, setNewTag] = useState('');
   const [showAddTag, setShowAddTag] = useState(false);
+  const [newSpaceName, setNewSpaceName] = useState('');
+
+  // Space selected inside Chats tab vs Groups tab
+  const [activeChatSpace, setActiveChatSpace] = useState<string>('main_wall');
+  const [activeGroupSpace, setActiveGroupSpace] = useState<string>('main_wall');
+
+  // Drag & drop sorting state for pins
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+
+  // Assign to Space modal
+  const [assignTarget, setAssignTarget] = useState<{ type: 'dm' | 'group'; tag: string; name: string } | null>(null);
+
+  // Time tracker for countdown badges
+  const [timeNow, setTimeNow] = useState<number>(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setTimeNow(Date.now());
+    }, 10000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Status settings state
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
@@ -60,7 +120,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const groupedStatuses = React.useMemo(() => {
     const groups: { [key: string]: UserStatus[] } = {};
     statuses.forEach((status) => {
-      // Don't show our own statuses in the main list
       if (status.creator_id !== currentUser.tag) {
         if (!groups[status.creator_id]) {
           groups[status.creator_id] = [];
@@ -81,43 +140,153 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  const filteredRooms = rooms.filter((r) =>
-    r.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const handleCreateSpace = (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = newSpaceName.trim();
+    if (!clean) return;
+    if (spaces.includes(clean)) {
+      alert("Space already exists!");
+      return;
+    }
+    saveSpaces([...spaces, clean]);
+    setNewSpaceName('');
+  };
 
-  const otherUsers = allUsers.filter((u) => u.tag !== currentUser.tag);
+  const handleDeleteSpace = (spaceName: string) => {
+    if (!confirm(`Are you sure you want to delete the space "${spaceName}"? Conversations will remain in Unassigned or other spaces.`)) {
+      return;
+    }
+    saveSpaces(spaces.filter(s => s !== spaceName));
 
-  const filteredUsers = otherUsers.filter((u) => {
-    const matchesSearch =
-      u.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      u.tag.toLowerCase().includes(searchQuery.toLowerCase());
+    const updatedAssignments = { ...spaceAssignments };
+    Object.keys(updatedAssignments).forEach(chatId => {
+      updatedAssignments[chatId] = updatedAssignments[chatId]?.filter(s => s !== spaceName) || [];
+    });
+    saveSpaceAssignments(updatedAssignments);
 
-    if (!matchesSearch) return false;
+    const updatedPins = { ...spacePins };
+    delete updatedPins[spaceName];
+    saveSpacePins(updatedPins);
 
-    if (searchQuery.trim() === '') {
-      return chattedUserTags.includes(u.tag) || (activeDirectUser && activeDirectUser.tag === u.tag);
+    if (activeChatSpace === spaceName) setActiveChatSpace('main_wall');
+    if (activeGroupSpace === spaceName) setActiveGroupSpace('main_wall');
+  };
+
+  const handleRenameSpace = (spaceName: string) => {
+    const newName = prompt(`Rename space "${spaceName}" to:`, spaceName);
+    if (!newName) return;
+    const clean = newName.trim();
+    if (!clean || clean === spaceName) return;
+    if (spaces.includes(clean)) {
+      alert("Space already exists!");
+      return;
+    }
+    saveSpaces(spaces.map(s => s === spaceName ? clean : s));
+
+    const updatedAssignments = { ...spaceAssignments };
+    Object.keys(updatedAssignments).forEach(chatId => {
+      updatedAssignments[chatId] = updatedAssignments[chatId]?.map(s => s === spaceName ? clean : s) || [];
+    });
+    saveSpaceAssignments(updatedAssignments);
+
+    const updatedPins = { ...spacePins };
+    if (updatedPins[spaceName]) {
+      updatedPins[clean] = updatedPins[spaceName];
+      delete updatedPins[spaceName];
+      saveSpacePins(updatedPins);
     }
 
-    return true;
-  });
+    if (activeChatSpace === spaceName) setActiveChatSpace(clean);
+    if (activeGroupSpace === spaceName) setActiveGroupSpace(clean);
+  };
 
-  const sortedRooms = React.useMemo(() => {
-    return [...filteredRooms].sort((a, b) => {
-      const timeA = roomLastMessage[a.name] || 0;
-      const timeB = roomLastMessage[b.name] || 0;
-      return timeB - timeA;
+  const handleToggleSpaceAssign = (spaceName: string) => {
+    if (!assignTarget) return;
+    const chatId = `${assignTarget.type}:${assignTarget.tag}`;
+    const currentAssigned = spaceAssignments[chatId] || [];
+    let newAssigned: string[];
+    if (currentAssigned.includes(spaceName)) {
+      newAssigned = currentAssigned.filter(s => s !== spaceName);
+    } else {
+      newAssigned = [...currentAssigned, spaceName];
+    }
+    saveSpaceAssignments({
+      ...spaceAssignments,
+      [chatId]: newAssigned
     });
-  }, [filteredRooms, roomLastMessage]);
+  };
 
-  const sortedUsers = React.useMemo(() => {
-    return [...filteredUsers].sort((a, b) => {
-      const timeA = directLastMessage[a.tag] || 0;
-      const timeB = directLastMessage[b.tag] || 0;
-      return timeB - timeA;
-    });
-  }, [filteredUsers, directLastMessage]);
+  const handleTogglePin = (chatId: string, isMainWall: boolean, spaceName?: string) => {
+    if (isMainWall) {
+      if (mainWallPins.includes(chatId)) {
+        saveMainWallPins(mainWallPins.filter(id => id !== chatId));
+      } else {
+        saveMainWallPins([...mainWallPins, chatId]);
+      }
+    } else if (spaceName) {
+      const pins = spacePins[spaceName] || [];
+      if (pins.includes(chatId)) {
+        saveSpacePins({
+          ...spacePins,
+          [spaceName]: pins.filter(id => id !== chatId)
+        });
+      } else {
+        saveSpacePins({
+          ...spacePins,
+          [spaceName]: [...pins, chatId]
+        });
+      }
+    }
+  };
 
-  // Status Permissions & Deletion Helpers
+  const handleToggleKeepOnWall = (chatId: string) => {
+    if (keepOnWall.includes(chatId)) {
+      saveKeepOnWall(keepOnWall.filter(id => id !== chatId));
+    } else {
+      saveKeepOnWall([...keepOnWall, chatId]);
+    }
+  };
+
+  // Drag & drop handlers
+  const handleDragStart = (id: string) => {
+    setDraggedId(id);
+  };
+
+  const handleDragOver = (e: React.DragEvent, id: string) => {
+    e.preventDefault();
+    setDragOverId(id);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverId(null);
+  };
+
+  const handleDrop = (targetId: string, isMainWall: boolean, spaceName?: string) => {
+    setDragOverId(null);
+    if (!draggedId || draggedId === targetId) return;
+
+    if (isMainWall) {
+      const pins = [...mainWallPins];
+      const dragIdx = pins.indexOf(draggedId);
+      const dropIdx = pins.indexOf(targetId);
+      if (dragIdx !== -1 && dropIdx !== -1) {
+        pins.splice(dragIdx, 1);
+        pins.splice(dropIdx, 0, draggedId);
+        saveMainWallPins(pins);
+      }
+    } else if (spaceName) {
+      const pins = [...(spacePins[spaceName] || [])];
+      const dragIdx = pins.indexOf(draggedId);
+      const dropIdx = pins.indexOf(targetId);
+      if (dragIdx !== -1 && dropIdx !== -1) {
+        pins.splice(dragIdx, 1);
+        pins.splice(dropIdx, 0, draggedId);
+        saveSpacePins({ ...spacePins, [spaceName]: pins });
+      }
+    }
+    setDraggedId(null);
+  };
+
   const fetchPermissions = async () => {
     try {
       const res = await fetch(`${BACKEND_URL}/api/status-permissions?user_tag=${currentUser.tag}`);
@@ -170,7 +339,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  // Group editing/deletion
   const handleEditRoom = async (roomName: string) => {
     const newName = prompt(`Enter a new name for the group #${roomName}:`);
     if (!newName) return;
@@ -225,6 +393,257 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
+  // Helper renderers for badges and buttons on chat rows
+  const renderCountdown = (chatId: string, lastMsgTime: number) => {
+    if (keepOnWall.includes(chatId)) return null;
+    if (lastMsgTime <= 0) return null;
+    const remainingMs = lastMsgTime + timerDurationHours * 3600000 - timeNow;
+    if (remainingMs <= 0) return null;
+
+    if (remainingMs > 3600000) {
+      const hours = Math.ceil(remainingMs / 3600000);
+      return (
+        <span className="countdown-badge" title="Surfaced on Main Wall">
+          <Clock size={10} /> {hours}h left
+        </span>
+      );
+    } else {
+      const mins = Math.ceil(remainingMs / 60000);
+      return (
+        <span className="countdown-badge" title="Surfaced on Main Wall">
+          <Clock size={10} /> {mins}m left
+        </span>
+      );
+    }
+  };
+
+  const renderMultiSpaceBadge = (chatId: string) => {
+    const assigned = spaceAssignments[chatId] || [];
+    if (assigned.length === 0) return null;
+    const label = assigned.join(', ');
+    return (
+      <span className="multi-space-badge" title={`Belongs to: ${label}`}>
+        {assigned.length === 1 ? assigned[0] : `${assigned.length} spaces`}
+      </span>
+    );
+  };
+
+  const renderChatActions = (chatId: string, isMainWall: boolean, spaceName?: string, lastMsgTime?: number) => {
+    const isPinned = isMainWall ? mainWallPins.includes(chatId) : (spacePins[spaceName || '']?.includes(chatId) || false);
+    const isKept = keepOnWall.includes(chatId);
+
+    const parts = chatId.split(':');
+    const type = parts[0] as 'dm' | 'group';
+    const tag = parts[1];
+    const room = type === 'group' ? rooms.find(r => r.name === tag) : null;
+    const isRoomCreator = room && room.creator_tag === currentUser.tag;
+
+    return (
+      <div className="chat-actions-hover" style={{ display: 'flex', gap: '6px', alignItems: 'center', marginLeft: 'auto' }} onClick={e => e.stopPropagation()}>
+        {isRoomCreator && (
+          <>
+            <button
+              className="space-action-btn"
+              onClick={() => handleEditRoom(tag)}
+              title="Rename Group"
+            >
+              <Edit3 size={13} />
+            </button>
+            <button
+              className="space-action-btn delete"
+              onClick={() => handleDeleteRoom(tag)}
+              title="Delete Group"
+            >
+              <Trash2 size={13} style={{ color: '#ff5c5c' }} />
+            </button>
+          </>
+        )}
+
+        <button
+          className="space-action-btn"
+          onClick={() => handleTogglePin(chatId, isMainWall, spaceName)}
+          title={isPinned ? "Unpin from top" : "Pin to top"}
+        >
+          {isPinned ? <PinOff size={14} style={{ color: 'var(--accent-purple)' }} /> : <Pin size={14} />}
+        </button>
+
+        {isMainWall && !isPinned && lastMsgTime && lastMsgTime > 0 ? (
+          <button
+            className="space-action-btn"
+            onClick={() => handleToggleKeepOnWall(chatId)}
+            title={isKept ? "Remove from wall" : "Keep on wall permanently"}
+          >
+            <Eye size={14} style={{ color: isKept ? 'var(--accent-cyan)' : 'inherit' }} />
+          </button>
+        ) : null}
+
+        <button
+          className="space-action-btn"
+          onClick={() => {
+            const name = type === 'dm' ? (allUsers.find(u => u.tag === tag)?.username || tag) : tag;
+            setAssignTarget({ type, tag, name });
+          }}
+          title="Assign to Spaces"
+        >
+          <FolderPlus size={14} />
+        </button>
+      </div>
+    );
+  };
+
+  // ----------------------------------------------------
+  // FILTERING AND SORTING FOR DM CHATS
+  // ----------------------------------------------------
+  const otherUsers = allUsers.filter((u) => u.tag !== currentUser.tag);
+
+  const filteredUsers = otherUsers.filter((u) => {
+    const matchesSearch =
+      u.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      u.tag.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchesSearch;
+  });
+
+  // Partition DMs into pinned and active
+  const { pinnedDMs, activeDMs } = React.useMemo(() => {
+    const chatId = (tag: string) => `dm:${tag}`;
+
+    // Filter list based on selected space
+    let baseList = [...filteredUsers];
+
+    if (activeChatSpace === 'main_wall') {
+      // Main wall filters out things that are expired (not pinned, not kept, activity > global timer)
+      baseList = baseList.filter(u => {
+        const id = chatId(u.tag);
+        if (mainWallPins.includes(id)) return true;
+        if (keepOnWall.includes(id)) return true;
+        
+        const lastMsgTime = directLastMessage[u.tag] || 0;
+        if (lastMsgTime <= 0) return false;
+        
+        const ageHours = (timeNow - lastMsgTime) / 3600000;
+        return ageHours < timerDurationHours;
+      });
+    } else if (activeChatSpace === 'unassigned') {
+      // Unassigned contains chats with activity that have no space assignments
+      baseList = baseList.filter(u => {
+        const id = chatId(u.tag);
+        const lastMsg = directLastMessage[u.tag] || 0;
+        const assigned = spaceAssignments[id] || [];
+        return lastMsg > 0 && assigned.length === 0;
+      });
+    } else {
+      // Custom space contains chats assigned to it
+      baseList = baseList.filter(u => {
+        const id = chatId(u.tag);
+        return spaceAssignments[id]?.includes(activeChatSpace);
+      });
+    }
+
+    // Now split into pinned vs active
+    const pinnedList: typeof baseList = [];
+    const activeList: typeof baseList = [];
+
+    baseList.forEach(u => {
+      const id = chatId(u.tag);
+      const isPinned = activeChatSpace === 'main_wall' 
+        ? mainWallPins.includes(id) 
+        : (activeChatSpace !== 'unassigned' && (spacePins[activeChatSpace]?.includes(id)));
+      
+      if (isPinned) {
+        pinnedList.push(u);
+      } else {
+        activeList.push(u);
+      }
+    });
+
+    // Sort Pinned List based on the custom pinned index arrays
+    pinnedList.sort((a, b) => {
+      const idA = chatId(a.tag);
+      const idB = chatId(b.tag);
+      const arr = activeChatSpace === 'main_wall' ? mainWallPins : (spacePins[activeChatSpace] || []);
+      return arr.indexOf(idA) - arr.indexOf(idB);
+    });
+
+    // Sort Active List by last message timestamp descending
+    activeList.sort((a, b) => {
+      const timeA = directLastMessage[a.tag] || 0;
+      const timeB = directLastMessage[b.tag] || 0;
+      return timeB - timeA;
+    });
+
+    return { pinnedDMs: pinnedList, activeDMs: activeList };
+  }, [filteredUsers, activeChatSpace, mainWallPins, spacePins, keepOnWall, spaceAssignments, directLastMessage, timeNow, timerDurationHours]);
+
+
+  // ----------------------------------------------------
+  // FILTERING AND SORTING FOR GROUP ROOMS
+  // ----------------------------------------------------
+  const filteredRooms = rooms.filter((r) =>
+    r.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const { pinnedGroups, activeGroups } = React.useMemo(() => {
+    const chatId = (name: string) => `group:${name}`;
+
+    let baseList = [...filteredRooms];
+
+    if (activeGroupSpace === 'main_wall') {
+      baseList = baseList.filter(r => {
+        const id = chatId(r.name);
+        if (mainWallPins.includes(id)) return true;
+        if (keepOnWall.includes(id)) return true;
+        
+        const lastMsgTime = roomLastMessage[r.name] || 0;
+        if (lastMsgTime <= 0) return false;
+        
+        const ageHours = (timeNow - lastMsgTime) / 3600000;
+        return ageHours < timerDurationHours;
+      });
+    } else if (activeGroupSpace === 'unassigned') {
+      baseList = baseList.filter(r => {
+        const id = chatId(r.name);
+        const assigned = spaceAssignments[id] || [];
+        return assigned.length === 0;
+      });
+    } else {
+      baseList = baseList.filter(r => {
+        const id = chatId(r.name);
+        return spaceAssignments[id]?.includes(activeGroupSpace);
+      });
+    }
+
+    const pinnedList: typeof baseList = [];
+    const activeList: typeof baseList = [];
+
+    baseList.forEach(r => {
+      const id = chatId(r.name);
+      const isPinned = activeGroupSpace === 'main_wall' 
+        ? mainWallPins.includes(id) 
+        : (activeGroupSpace !== 'unassigned' && (spacePins[activeGroupSpace]?.includes(id)));
+      
+      if (isPinned) {
+        pinnedList.push(r);
+      } else {
+        activeList.push(r);
+      }
+    });
+
+    pinnedList.sort((a, b) => {
+      const idA = chatId(a.name);
+      const idB = chatId(b.name);
+      const arr = activeGroupSpace === 'main_wall' ? mainWallPins : (spacePins[activeGroupSpace] || []);
+      return arr.indexOf(idA) - arr.indexOf(idB);
+    });
+
+    activeList.sort((a, b) => {
+      const timeA = roomLastMessage[a.name] || 0;
+      const timeB = roomLastMessage[b.name] || 0;
+      return timeB - timeA;
+    });
+
+    return { pinnedGroups: pinnedList, activeGroups: activeList };
+  }, [filteredRooms, activeGroupSpace, mainWallPins, spacePins, keepOnWall, spaceAssignments, roomLastMessage, timeNow, timerDurationHours]);
+
   return (
     <aside className="sidebar">
       {/* User profile header */}
@@ -238,232 +657,392 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      {/* Navigation tabs */}
-      <nav className="nav-tabs">
-        <button
-          className={`nav-tab ${activeTab === 'chats' ? 'active' : ''}`}
-          onClick={() => {
-            setActiveTab('chats');
-            setSearchQuery('');
-          }}
-        >
-          <MessageSquare size={18} />
-          Chats
-        </button>
-        <button
-          className={`nav-tab ${activeTab === 'groups' ? 'active' : ''}`}
-          onClick={() => {
-            setActiveTab('groups');
-            setSearchQuery('');
-          }}
-        >
-          <Users size={18} />
-          Groups
-        </button>
-        <button
-          className={`nav-tab ${activeTab === 'status' ? 'active' : ''}`}
-          onClick={() => {
-            setActiveTab('status');
-            setSearchQuery('');
-          }}
-        >
-          <Image size={18} />
-          Status
-        </button>
-      </nav>
-
       {/* Main Sidebar Contents */}
-      <div className="sidebar-content">
+      <div className="sidebar-content" style={{ display: 'flex', flexDirection: 'column', height: 'calc(100% - 130px)', overflowY: 'hidden' }}>
+        
         {activeTab === 'chats' ? (
-          <>
-            {/* Search */}
-            <div className="search-container">
-              <Search className="search-icon" size={18} />
-              <input
-                type="text"
-                placeholder="Search users..."
-                className="search-input"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            {/* Space Strip */}
+            <div className="space-strip">
+              <button 
+                className={`space-pill ${activeChatSpace === 'main_wall' ? 'active' : ''}`}
+                onClick={() => setActiveChatSpace('main_wall')}
+              >
+                Main wall
+              </button>
+              {spaces.map(space => (
+                <button
+                  key={space}
+                  className={`space-pill ${activeChatSpace === space ? 'active' : ''}`}
+                  onClick={() => setActiveChatSpace(space)}
+                >
+                  {space}
+                </button>
+              ))}
+              <button 
+                className={`space-pill ${activeChatSpace === 'unassigned' ? 'active' : ''}`}
+                onClick={() => setActiveChatSpace('unassigned')}
+              >
+                Unassigned
+              </button>
             </div>
 
-            {/* Direct Messages list */}
-            <div className="tag-list-label">Direct Messages</div>
-            <div className="tag-items">
-              {sortedUsers.length > 0 ? (
-                sortedUsers.map((user) => {
-                  const unreadCount = unreadDirects[user.tag] || 0;
-                  return (
-                    <div
-                      key={user.tag}
-                      className={`tag-item ${activeDirectUser?.tag === user.tag ? 'active' : ''}`}
-                      onClick={() => setActiveDirectUser(user)}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
-                        <div style={{ position: 'relative' }}>
-                          <div className="user-avatar" style={{ width: '36px', height: '36px', fontSize: '1.2rem' }}>
-                            {user.avatar}
-                          </div>
-                          {user.online && (
-                            <div
-                              style={{
-                                position: 'absolute',
-                                bottom: '-2px',
-                                right: '-2px',
-                                width: '12px',
-                                height: '12px',
-                                borderRadius: '50%',
-                                backgroundColor: '#2ec4b6',
-                                border: '2px solid var(--bg-dark)',
-                                boxShadow: '0 0 8px #2ec4b6',
-                              }}
-                            />
-                          )}
-                        </div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: unreadCount ? 600 : 500, color: unreadCount ? 'var(--text-main)' : 'inherit', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {user.username}
-                          </div>
-                          <div style={{ fontSize: '0.8rem', color: unreadCount ? 'var(--accent-purple)' : 'var(--text-muted)' }}>
-                            @{user.tag}
-                          </div>
-                        </div>
-                        {unreadCount > 0 && (
-                          <div className="unread-badge">
-                            {unreadCount}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                  No other users found.
-                </div>
-              )}
-            </div>
-          </>
-        ) : activeTab === 'groups' ? (
-          <>
             {/* Search */}
-            <div className="search-container">
-              <Search className="search-icon" size={18} />
-              <input
-                type="text"
-                placeholder="Search groups..."
-                className="search-input"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
+            <div className="search-container" style={{ padding: '12px 16px 4px 16px' }}>
+              <div className="search-box" style={{ position: 'relative', width: '100%' }}>
+                <Search className="search-icon" size={18} style={{ position: 'absolute', left: '12px', top: '10px', color: 'var(--text-muted)' }} />
+                <input
+                  type="text"
+                  placeholder={activeChatSpace === 'main_wall' ? "Search Main wall..." : `Search ${activeChatSpace}...`}
+                  className="search-input"
+                  style={{ width: '100%', paddingLeft: '38px', height: '38px' }}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </div>
+            </div>
+
+            {/* Chats Feed Scrollable */}
+            <div className="sidebar-scrollable-feed" style={{ flex: 1, overflowY: 'auto', padding: '0 8px' }}>
+              {/* Pinned Section */}
+              {pinnedDMs.length > 0 && (
+                <>
+                  <div className="tag-list-label" style={{ padding: '8px 12px 4px 12px', color: 'var(--accent-purple)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <Pin size={11} /> Pinned Chats
+                  </div>
+                  <div className="tag-items">
+                    {pinnedDMs.map((user) => {
+                      const id = `dm:${user.tag}`;
+                      const unreadCount = unreadDirects[user.tag] || 0;
+                      return (
+                        <div
+                          key={user.tag}
+                          className={`tag-item drag-handle ${activeDirectUser?.tag === user.tag ? 'active' : ''} ${dragOverId === id ? 'drag-over' : ''}`}
+                          onClick={() => setActiveDirectUser(user)}
+                          draggable
+                          onDragStart={() => handleDragStart(id)}
+                          onDragOver={(e) => handleDragOver(e, id)}
+                          onDragLeave={handleDragLeave}
+                          onDrop={() => handleDrop(id, activeChatSpace === 'main_wall', activeChatSpace !== 'main_wall' ? activeChatSpace : undefined)}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
+                            <div style={{ position: 'relative' }}>
+                              <div className="user-avatar" style={{ width: '36px', height: '36px', fontSize: '1.2rem' }}>
+                                {user.avatar}
+                              </div>
+                              {user.online && (
+                                <div style={{ position: 'absolute', bottom: '-2px', right: '-2px', width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#2ec4b6', border: '2px solid var(--bg-dark)' }} />
+                              )}
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', width: '100%', minWidth: 0 }}>
+                                <span style={{ fontWeight: 600, color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {user.username}
+                                </span>
+                                {renderMultiSpaceBadge(id)}
+                              </div>
+                              <div style={{ fontSize: '0.8rem', color: 'var(--accent-purple)' }}>
+                                @{user.tag}
+                              </div>
+                            </div>
+                            {unreadCount > 0 && <div className="unread-badge">{unreadCount}</div>}
+                            {renderChatActions(id, activeChatSpace === 'main_wall', activeChatSpace !== 'main_wall' ? activeChatSpace : undefined)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {/* Active Section */}
+              <div className="tag-list-label" style={{ padding: '16px 12px 4px 12px' }}>Conversations</div>
+              <div className="tag-items">
+                {activeDMs.length > 0 ? (
+                  activeDMs.map((user) => {
+                    const id = `dm:${user.tag}`;
+                    const unreadCount = unreadDirects[user.tag] || 0;
+                    const lastMsgTime = directLastMessage[user.tag] || 0;
+                    return (
+                      <div
+                        key={user.tag}
+                        className={`tag-item ${activeDirectUser?.tag === user.tag ? 'active' : ''}`}
+                        onClick={() => setActiveDirectUser(user)}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
+                          <div style={{ position: 'relative' }}>
+                            <div className="user-avatar" style={{ width: '36px', height: '36px', fontSize: '1.2rem' }}>
+                              {user.avatar}
+                            </div>
+                            {user.online && (
+                              <div style={{ position: 'absolute', bottom: '-2px', right: '-2px', width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#2ec4b6', border: '2px solid var(--bg-dark)' }} />
+                            )}
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', width: '100%', minWidth: 0 }}>
+                              <span style={{ fontWeight: 500, color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {user.username}
+                              </span>
+                              {renderMultiSpaceBadge(id)}
+                              {activeChatSpace === 'main_wall' && renderCountdown(id, lastMsgTime)}
+                            </div>
+                            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                              @{user.tag}
+                            </div>
+                          </div>
+                          {unreadCount > 0 && <div className="unread-badge">{unreadCount}</div>}
+                          {renderChatActions(id, activeChatSpace === 'main_wall', activeChatSpace !== 'main_wall' ? activeChatSpace : undefined, lastMsgTime)}
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                    No conversations in this space.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : activeTab === 'groups' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            {/* Space Strip */}
+            <div className="space-strip">
+              <button 
+                className={`space-pill ${activeGroupSpace === 'main_wall' ? 'active' : ''}`}
+                onClick={() => setActiveGroupSpace('main_wall')}
+              >
+                Main wall
+              </button>
+              {spaces.map(space => (
+                <button
+                  key={space}
+                  className={`space-pill ${activeGroupSpace === space ? 'active' : ''}`}
+                  onClick={() => setActiveGroupSpace(space)}
+                >
+                  {space}
+                </button>
+              ))}
+              <button 
+                className={`space-pill ${activeGroupSpace === 'unassigned' ? 'active' : ''}`}
+                onClick={() => setActiveGroupSpace('unassigned')}
+              >
+                Unassigned
+              </button>
+            </div>
+
+            {/* Search */}
+            <div className="search-container" style={{ padding: '12px 16px 4px 16px' }}>
+              <div className="search-box" style={{ position: 'relative', width: '100%' }}>
+                <Search className="search-icon" size={18} style={{ position: 'absolute', left: '12px', top: '10px', color: 'var(--text-muted)' }} />
+                <input
+                  type="text"
+                  placeholder={activeGroupSpace === 'main_wall' ? "Search Main wall..." : `Search ${activeGroupSpace}...`}
+                  className="search-input"
+                  style={{ width: '100%', paddingLeft: '38px', height: '38px' }}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </div>
             </div>
 
             {/* Create tag */}
-            {showAddTag ? (
-              <form onSubmit={handleCreateTag} style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-                <input
-                  type="text"
-                  placeholder="e.g. tech, movies"
-                  className="form-input"
-                  style={{ padding: '10px 14px' }}
-                  value={newTag}
-                  onChange={(e) => setNewTag(e.target.value)}
-                  autoFocus
-                />
-                <button type="submit" className="btn-primary" style={{ padding: '0 16px', width: 'auto' }}>
-                  Add
-                </button>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  style={{
-                    padding: '0 16px',
-                    width: 'auto',
-                    background: 'rgba(255,255,255,0.05)',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-main)',
-                    boxShadow: 'none',
-                  }}
-                  onClick={() => setShowAddTag(false)}
-                >
-                  Cancel
-                </button>
-              </form>
-            ) : (
-              <button className="create-tag-btn" onClick={() => setShowAddTag(true)}>
-                <Plus size={18} />
-                Create New Group Tag
-              </button>
-            )}
-
-            {/* Tags list */}
-            <div className="tag-list-label">Group Tag channels</div>
-            <div className="tag-items" style={{ marginBottom: '20px' }}>
-              {sortedRooms.length > 0 ? (
-                sortedRooms.map((room) => {
-                  const unreadCount = unreadRooms[room.name] || 0;
-                  return (
-                    <div
-                      key={room.name}
-                      className={`tag-item ${activeTag === room.name ? 'active' : ''}`}
-                      onClick={() => setActiveTag(room.name)}
-                      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}
-                    >
-                      <div className="tag-name-container" style={{ flex: 1, minWidth: 0 }}>
-                        <div className="tag-hash-icon">#</div>
-                        <span className="tag-title" style={{ fontWeight: unreadCount ? 600 : 500, color: unreadCount ? 'var(--text-main)' : 'inherit', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          #{room.name}
-                        </span>
-                        {unreadCount > 0 && (
-                          <div className="unread-badge">
-                            {unreadCount}
-                          </div>
-                        )}
-                      </div>
-                      {room.creator_tag === currentUser.tag && (
-                        <div style={{ display: 'flex', gap: '8px', paddingRight: '4px' }}>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleEditRoom(room.name);
-                            }}
-                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}
-                            title="Rename Group"
-                            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-main)')}
-                            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
-                          >
-                            <Edit3 size={13} />
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteRoom(room.name);
-                            }}
-                            style={{ background: 'none', border: 'none', color: '#ff5c5c', cursor: 'pointer', padding: '2px' }}
-                            title="Delete Group"
-                            onMouseEnter={(e) => (e.currentTarget.style.color = '#ff3333')}
-                            onMouseLeave={(e) => (e.currentTarget.style.color = '#ff5c5c')}
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
+            <div style={{ padding: '4px 16px 12px 16px' }}>
+              {showAddTag ? (
+                <form onSubmit={handleCreateTag} style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    placeholder="e.g. tech, movies"
+                    className="form-input"
+                    style={{ padding: '8px 12px', height: '38px', flex: 1 }}
+                    value={newTag}
+                    onChange={(e) => setNewTag(e.target.value)}
+                    autoFocus
+                  />
+                  <button type="submit" className="btn-primary" style={{ padding: '0 12px', width: 'auto', height: '38px' }}>
+                    Add
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    style={{ padding: '0 12px', width: 'auto', height: '38px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', color: 'var(--text-main)', boxShadow: 'none' }}
+                    onClick={() => setShowAddTag(false)}
+                  >
+                    Cancel
+                  </button>
+                </form>
               ) : (
-                <div style={{ textAlign: 'center', padding: '10px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                  No tag rooms found.
-                </div>
+                <button className="create-tag-btn" style={{ height: '38px', width: '100%' }} onClick={() => setShowAddTag(true)}>
+                  <Plus size={18} />
+                  Create New Group Tag
+                </button>
               )}
             </div>
-          </>
-        ) : (
-          /* Status Feed Tab */
+
+            {/* Groups Scrollable Feed */}
+            <div className="sidebar-scrollable-feed" style={{ flex: 1, overflowY: 'auto', padding: '0 8px' }}>
+              {/* Pinned Section */}
+              {pinnedGroups.length > 0 && (
+                <>
+                  <div className="tag-list-label" style={{ padding: '8px 12px 4px 12px', color: 'var(--accent-purple)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <Pin size={11} /> Pinned Groups
+                  </div>
+                  <div className="tag-items">
+                    {pinnedGroups.map((room) => {
+                      const id = `group:${room.name}`;
+                      const unreadCount = unreadRooms[room.name] || 0;
+                      return (
+                        <div
+                          key={room.name}
+                          className={`tag-item drag-handle ${activeTag === room.name ? 'active' : ''} ${dragOverId === id ? 'drag-over' : ''}`}
+                          onClick={() => setActiveTag(room.name)}
+                          draggable
+                          onDragStart={() => handleDragStart(id)}
+                          onDragOver={(e) => handleDragOver(e, id)}
+                          onDragLeave={handleDragLeave}
+                          onDrop={() => handleDrop(id, activeGroupSpace === 'main_wall', activeGroupSpace !== 'main_wall' ? activeGroupSpace : undefined)}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
+                            <div className="tag-hash-icon" style={{ fontSize: '1.2rem', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: '50%' }}>#</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', width: '100%', minWidth: 0 }}>
+                                <span className="tag-title" style={{ fontWeight: 600, color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  #{room.name}
+                                </span>
+                                {renderMultiSpaceBadge(id)}
+                              </div>
+                            </div>
+                            {unreadCount > 0 && <div className="unread-badge">{unreadCount}</div>}
+                            {renderChatActions(id, activeGroupSpace === 'main_wall', activeGroupSpace !== 'main_wall' ? activeGroupSpace : undefined)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {/* Active Channels */}
+              <div className="tag-list-label" style={{ padding: '16px 12px 4px 12px' }}>Group Channels</div>
+              <div className="tag-items">
+                {activeGroups.length > 0 ? (
+                  activeGroups.map((room) => {
+                    const id = `group:${room.name}`;
+                    const unreadCount = unreadRooms[room.name] || 0;
+                    const lastMsgTime = roomLastMessage[room.name] || 0;
+                    return (
+                      <div
+                        key={room.name}
+                        className={`tag-item ${activeTag === room.name ? 'active' : ''}`}
+                        onClick={() => setActiveTag(room.name)}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
+                          <div className="tag-hash-icon" style={{ fontSize: '1.2rem', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.03)', borderRadius: '50%' }}>#</div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', width: '100%', minWidth: 0 }}>
+                              <span className="tag-title" style={{ fontWeight: 500, color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                #{room.name}
+                              </span>
+                              {renderMultiSpaceBadge(id)}
+                              {activeGroupSpace === 'main_wall' && renderCountdown(id, lastMsgTime)}
+                            </div>
+                          </div>
+                          {unreadCount > 0 && <div className="unread-badge">{unreadCount}</div>}
+                          {renderChatActions(id, activeGroupSpace === 'main_wall', activeGroupSpace !== 'main_wall' ? activeGroupSpace : undefined, lastMsgTime)}
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                    No group tags in this space.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : activeTab === 'spaces' ? (
+          /* Spaces Grid Management Tab */
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto' }}>
+            <div style={{ padding: '16px 16px 8px 16px' }}>
+              <h3 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--accent-purple)', marginBottom: '12px' }}>Create New Space</h3>
+              <form onSubmit={handleCreateSpace} style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type="text"
+                  placeholder="e.g. Work, Family, Study"
+                  className="form-input"
+                  style={{ padding: '10px 14px', height: '38px', flex: 1 }}
+                  value={newSpaceName}
+                  onChange={(e) => setNewSpaceName(e.target.value)}
+                />
+                <button type="submit" className="btn-primary" style={{ padding: '0 16px', width: 'auto', height: '38px' }}>
+                  Create
+                </button>
+              </form>
+            </div>
+
+            <div className="tag-list-label" style={{ padding: '16px 16px 4px 16px' }}>Your Relational Spaces</div>
+            
+            <div className="spaces-grid">
+              {/* Main Wall Card */}
+              <div className="space-card" onClick={() => { setActiveTab('chats'); setActiveChatSpace('main_wall'); }}>
+                <div>
+                  <div className="space-card-name" style={{ color: 'var(--accent-purple)' }}>Main wall</div>
+                  <div className="space-card-count">Self-Cleaning view</div>
+                </div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Default Inbox</div>
+              </div>
+
+              {/* Custom Space Cards */}
+              {spaces.map(space => {
+                // Count chats in this space
+                const dmsCount = otherUsers.filter(u => spaceAssignments[`dm:${u.tag}`]?.includes(space)).length;
+                const groupsCount = rooms.filter(r => spaceAssignments[`group:${r.name}`]?.includes(space)).length;
+
+                return (
+                  <div 
+                    key={space} 
+                    className="space-card" 
+                    onClick={() => { 
+                      setActiveTab('chats'); 
+                      setActiveChatSpace(space); 
+                    }}
+                  >
+                    <div>
+                      <div className="space-card-name">{space}</div>
+                      <div className="space-card-count">
+                        {dmsCount} {dmsCount === 1 ? 'chat' : 'chats'}, {groupsCount} {groupsCount === 1 ? 'group' : 'groups'}
+                      </div>
+                    </div>
+                    
+                    <div className="space-card-actions" onClick={e => e.stopPropagation()}>
+                      <button className="space-action-btn" onClick={() => handleRenameSpace(space)} title="Rename Space">
+                        <Edit3 size={13} />
+                      </button>
+                      <button className="space-action-btn delete" onClick={() => handleDeleteSpace(space)} title="Delete Space">
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Unassigned Card */}
+              <div className="space-card" onClick={() => { setActiveTab('chats'); setActiveChatSpace('unassigned'); }}>
+                <div>
+                  <div className="space-card-name" style={{ color: 'var(--accent-cyan)' }}>Unassigned</div>
+                  <div className="space-card-count">Holding space</div>
+                </div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Awaiting context</div>
+              </div>
+            </div>
+          </div>
+        ) : activeTab === 'activity' ? (
+          /* Activity Feed / Status tab combined */
           <div className="status-feed-container" style={{ display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto' }}>
-            {/* My Status header */}
-            <div className="status-my-story" style={{ marginBottom: '16px' }}>
+            
+            {/* Status updates stories (kept intact) */}
+            <div className="status-my-story" style={{ padding: '16px', marginBottom: '8px' }}>
               <div className="status-my-info" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
                 <div 
                   style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: statuses.some(s => s.creator_id === currentUser.tag) ? 'pointer' : 'default' }}
@@ -535,12 +1114,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </button>
               </div>
 
-              {/* My active stories list */}
               {statuses.filter(s => s.creator_id === currentUser.tag).length > 0 && (
                 <div className="my-active-statuses-container">
-                  <div className="my-active-statuses-title">
-                    My Active Statuses
-                  </div>
+                  <div className="my-active-statuses-title">My Active Statuses</div>
                   <div className="my-active-status-list">
                     {statuses.filter(s => s.creator_id === currentUser.tag).map((status, idx) => (
                       <div
@@ -573,8 +1149,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               )}
             </div>
 
-            <div className="status-feed-header">Recent Status Stories</div>
-            <div className="status-stories-list" style={{ flex: 1 }}>
+            <div className="status-feed-header" style={{ padding: '0 16px 8px 16px' }}>Recent Status Stories</div>
+            <div className="status-stories-list" style={{ padding: '0 8px', marginBottom: '20px' }}>
               {Object.keys(groupedStatuses).length > 0 ? (
                 Object.entries(groupedStatuses).map(([userId, userStories]) => {
                   const latestStory = userStories[userStories.length - 1];
@@ -611,100 +1187,142 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   );
                 })
               ) : (
-                <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                  No active statuses. Be the first to share!
+                <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                  No active status updates.
+                </div>
+              )}
+            </div>
+
+            {/* Unread message updates and notifications logs */}
+            <div className="status-feed-header" style={{ padding: '16px 16px 8px 16px', borderTop: '1px solid var(--border-color)' }}>Unread Activity</div>
+            <div style={{ padding: '0 16px 20px 16px' }}>
+              {Object.keys(unreadDirects).some(tag => unreadDirects[tag] > 0) || Object.keys(unreadRooms).some(name => unreadRooms[name] > 0) ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {Object.entries(unreadDirects).map(([tag, count]) => {
+                    if (count <= 0) return null;
+                    const u = allUsers.find(user => user.tag === tag);
+                    return (
+                      <div key={tag} className="tag-item" onClick={() => { setActiveTab('chats'); if (u) setActiveDirectUser(u); }} style={{ padding: '10px 14px', background: 'rgba(139, 92, 246, 0.05)', borderRadius: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                          <span style={{ fontSize: '1.2rem' }}>{u?.avatar || '👤'}</span>
+                          <div>
+                            <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>{u?.username || tag}</span>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>@{tag}</div>
+                          </div>
+                        </div>
+                        <span className="unread-badge">{count}</span>
+                      </div>
+                    );
+                  })}
+                  {Object.entries(unreadRooms).map(([name, count]) => {
+                    if (count <= 0) return null;
+                    return (
+                      <div key={name} className="tag-item" onClick={() => { setActiveTab('groups'); setActiveTag(name); }} style={{ padding: '10px 14px', background: 'rgba(139, 92, 246, 0.05)', borderRadius: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                          <span style={{ fontSize: '1rem', background: 'rgba(255,255,255,0.05)', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%' }}>#</span>
+                          <div>
+                            <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>#{name}</span>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Group channel</div>
+                          </div>
+                        </div>
+                        <span className="unread-badge">{count}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                  All conversations are up-to-date!
                 </div>
               )}
             </div>
           </div>
-        )}
-      </div>
-
-      {/* Privacy Settings Modal */}
-      {showPrivacyModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: 'rgba(0, 0, 0, 0.7)',
-          backdropFilter: 'blur(8px)',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          zIndex: 1000,
-          padding: '20px'
-        }}>
-          <div style={{
-            background: 'var(--glass-bg)',
-            backdropFilter: 'blur(20px)',
-            border: '1px solid var(--border-color)',
-            borderRadius: '16px',
-            width: '100%',
-            maxWidth: '450px',
-            maxHeight: '85vh',
-            display: 'flex',
-            flexDirection: 'column',
-            boxShadow: 'var(--shadow-lg)',
-            overflow: 'hidden'
-          }}>
-            <div style={{
-              padding: '16px 20px',
-              borderBottom: '1px solid var(--border-color)',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center'
-            }}>
-              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 600, color: 'var(--accent-purple)' }}>
-                Status Privacy Settings
-              </h3>
-              <button
-                onClick={() => setShowPrivacyModal(false)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--text-muted)',
-                  fontSize: '1.5rem',
-                  cursor: 'pointer',
-                  padding: 0,
-                  lineHeight: 1
-                }}
-              >
-                &times;
-              </button>
+        ) : (
+          /* Profile / Settings Tab */
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 16px', borderBottom: '1px solid var(--border-color)', background: 'rgba(255,255,255,0.01)' }}>
+              <div style={{ fontSize: '4.5rem', marginBottom: '12px' }}>{currentUser.avatar}</div>
+              <div style={{ fontSize: '1.25rem', fontWeight: 600, color: 'white' }}>{currentUser.username}</div>
+              <div style={{ fontSize: '0.85rem', color: 'var(--accent-purple)', fontWeight: 500, marginTop: '2px' }}>@{currentUser.tag}</div>
             </div>
 
+            {/* Surface Timer preference */}
+            <div className="settings-group" style={{ padding: '20px 16px' }}>
+              <label className="settings-label" style={{ fontWeight: 600, color: 'var(--accent-purple)', fontSize: '0.9rem', marginBottom: '10px' }}>
+                Main Wall Cleanup Duration
+              </label>
+              <select
+                className="form-input"
+                value={timerDurationHours}
+                onChange={(e) => saveTimerDurationHours(Number(e.target.value))}
+                style={{ width: '100%', background: 'rgba(20, 15, 38, 0.8)', border: '1px solid var(--border-color)', color: 'white', padding: '10px 14px', borderRadius: '10px', outline: 'none' }}
+              >
+                <option value={1}>1 Hour (Hyper clean)</option>
+                <option value={6}>6 Hours (Frequent checks)</option>
+                <option value={24}>1 Day (Recommended default)</option>
+                <option value={72}>3 Days (Casual checks)</option>
+                <option value={168}>1 Week (Low activity)</option>
+              </select>
+              <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px', lineHeight: 1.4 }}>
+                Direct Messages and Group Channels will automatically leave the Main Wall and return to their assigned Spaces after this duration of inactivity.
+              </p>
+            </div>
+
+            {/* Relational model description */}
+            <div style={{ padding: '0 16px 24px 16px', fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              <div style={{ fontWeight: 600, color: 'white', marginBottom: '4px' }}>Relational Concept Model</div>
+              Spaces is built on a single-entity model. Your chat history remains singular and secure, even if a conversation shortcut is mapped across multiple relational spaces.
+            </div>
+
+            {/* Logout button in Profile tab */}
+            <div style={{ padding: '0 16px 24px 16px' }}>
+              <button
+                onClick={onLogout}
+                style={{
+                  background: '#ff5c5c',
+                  border: 'none',
+                  color: 'white',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                  fontSize: '0.9rem',
+                  fontWeight: 600,
+                  width: '100%',
+                  padding: '10px 14px',
+                  borderRadius: '10px',
+                  boxShadow: '0 4px 12px rgba(255, 92, 92, 0.25)',
+                  transition: 'background-color 0.2s',
+                }}
+              >
+                <LogOut size={16} />
+                Logout Account
+              </button>
+            </div>
+          </div>
+        )}
+
+      </div>
+
+      {/* Privacy Settings Modal (Statuses) */}
+      {showPrivacyModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0, 0, 0, 0.7)', backdropFilter: 'blur(8px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 10000, padding: '20px' }}>
+          <div style={{ background: 'var(--glass-bg)', backdropFilter: 'blur(20px)', border: '1px solid var(--border-color)', borderRadius: '16px', width: '100%', maxWidth: '450px', maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: 'var(--shadow-lg)', overflow: 'hidden' }}>
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 600, color: 'var(--accent-purple)' }}>Status Privacy Settings</h3>
+              <button onClick={() => setShowPrivacyModal(false)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '1.5rem', cursor: 'pointer', padding: 0, lineHeight: 1 }}>&times;</button>
+            </div>
             <div style={{ padding: '16px 20px', fontSize: '0.85rem', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)' }}>
               Choose who can view the statuses you post. By default, viewers must be granted permission.
             </div>
-
-            <div style={{
-              flex: 1,
-              overflowY: 'auto',
-              padding: '12px 20px',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '12px'
-            }}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {otherUsers.length > 0 ? (
                 otherUsers.map(user => {
                   const perm = permissionsList.find(p => p.viewer_tag === user.tag);
                   const isAllowed = perm ? perm.allowed : false;
-
                   return (
-                    <div
-                      key={user.tag}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        padding: '10px',
-                        background: 'rgba(255, 255, 255, 0.02)',
-                        borderRadius: '10px',
-                        border: '1px solid rgba(255, 255, 255, 0.04)'
-                      }}
-                    >
+                    <div key={user.tag} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                         <span style={{ fontSize: '1.5rem' }}>{user.avatar}</span>
                         <div>
@@ -712,99 +1330,116 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>@{user.tag}</div>
                         </div>
                       </div>
-
                       <button
                         onClick={() => handleTogglePermission(user.tag, isAllowed)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          padding: '6px 12px',
-                          borderRadius: '8px',
-                          border: isAllowed ? '1px solid var(--accent-green)' : '1px solid var(--border-color)',
-                          background: isAllowed ? 'rgba(46, 196, 182, 0.1)' : 'rgba(255, 255, 255, 0.03)',
-                          color: isAllowed ? 'var(--accent-green)' : 'var(--text-muted)',
-                          cursor: 'pointer',
-                          fontSize: '0.8rem',
-                          fontWeight: 500,
-                          transition: 'all 0.2s'
-                        }}
+                        style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', borderRadius: '8px', border: isAllowed ? '1px solid var(--accent-green)' : '1px solid var(--border-color)', background: isAllowed ? 'rgba(46, 196, 182, 0.1)' : 'rgba(255, 255, 255, 0.03)', color: isAllowed ? 'var(--accent-green)' : 'var(--text-muted)', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 500, transition: 'all 0.2s' }}
                       >
-                        {isAllowed ? (
-                          <>
-                            <Eye size={14} />
-                            Allowed
-                          </>
-                        ) : (
-                          <>
-                            <EyeOff size={14} />
-                            Denied
-                          </>
-                        )}
+                        {isAllowed ? <><Eye size={14} /> Allowed</> : <><EyeOff size={14} /> Denied</>}
                       </button>
                     </div>
                   );
                 })
               ) : (
-                <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
-                  No other users found in the system.
-                </div>
+                <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>No other users found in the system.</div>
               )}
             </div>
-
-            <div style={{
-              padding: '16px 20px',
-              borderTop: '1px solid var(--border-color)',
-              display: 'flex',
-              justifyContent: 'flex-end',
-              background: 'rgba(255, 255, 255, 0.01)'
-            }}>
-              <button
-                className="btn-primary"
-                onClick={() => setShowPrivacyModal(false)}
-                style={{ width: 'auto', padding: '10px 24px' }}
-              >
-                Done
-              </button>
+            <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'flex-end', background: 'rgba(255, 255, 255, 0.01)' }}>
+              <button className="btn-primary" onClick={() => setShowPrivacyModal(false)} style={{ width: 'auto', padding: '10px 24px' }}>Done</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Sidebar Footer with Logout */}
-      <div
-        style={{
-          padding: '16px',
-          borderTop: '1px solid var(--border-color)',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          backgroundColor: 'rgba(255, 255, 255, 0.02)',
-        }}
-      >
-        <button
-          onClick={onLogout}
-          style={{
-            background: 'none',
-            border: 'none',
-            color: '#ff5c5c',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            fontSize: '0.9rem',
-            fontWeight: 500,
-            padding: '4px 8px',
-            borderRadius: '4px',
-            transition: 'background-color 0.2s',
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(255, 92, 92, 0.1)')}
-          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+      {/* Assign to Space modal (custom checkboxes) */}
+      {assignTarget && (
+        <div className="spaces-modal-overlay">
+          <div className="spaces-modal">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 600, color: 'var(--accent-purple)' }}>
+                Assign to Spaces
+              </h3>
+              <button 
+                onClick={() => setAssignTarget(null)}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '1.25rem', cursor: 'pointer', padding: 0 }}
+              >
+                &times;
+              </button>
+            </div>
+            
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '0 0 16px 0' }}>
+              Select relational spaces for: <strong style={{ color: 'white' }}>{assignTarget.type === 'group' ? `#${assignTarget.name}` : `@${assignTarget.tag}`}</strong>
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '200px', overflowY: 'auto', marginBottom: '20px' }}>
+              {spaces.map(space => {
+                const chatId = `${assignTarget.type}:${assignTarget.tag}`;
+                const isAssigned = spaceAssignments[chatId]?.includes(space) || false;
+                return (
+                  <label 
+                    key={space} 
+                    style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem' }}
+                  >
+                    <input 
+                      type="checkbox" 
+                      checked={isAssigned} 
+                      onChange={() => handleToggleSpaceAssign(space)}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <span style={{ color: isAssigned ? 'white' : 'var(--text-muted)' }}>{space}</span>
+                  </label>
+                );
+              })}
+            </div>
+
+            <button 
+              className="btn-primary" 
+              onClick={() => setAssignTarget(null)}
+              style={{ width: '100%', height: '38px' }}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom Navigation Tab Bar */}
+      <nav className="bottom-nav">
+        <button 
+          className={`bottom-nav-item ${activeTab === 'chats' ? 'active' : ''}`}
+          onClick={() => { setActiveTab('chats'); setSearchQuery(''); }}
         >
-          <LogOut size={16} />
-          Logout
+          <MessageSquare size={18} />
+          Chats
         </button>
-      </div>
+        <button 
+          className={`bottom-nav-item ${activeTab === 'groups' ? 'active' : ''}`}
+          onClick={() => { setActiveTab('groups'); setSearchQuery(''); }}
+        >
+          <Users size={18} />
+          Groups
+        </button>
+        <button 
+          className={`bottom-nav-item ${activeTab === 'spaces' ? 'active' : ''}`}
+          onClick={() => { setActiveTab('spaces'); setSearchQuery(''); }}
+        >
+          <FolderPlus size={18} />
+          Spaces
+        </button>
+        <button 
+          className={`bottom-nav-item ${activeTab === 'activity' ? 'active' : ''}`}
+          onClick={() => { setActiveTab('activity'); setSearchQuery(''); }}
+        >
+          <Image size={18} />
+          Activity
+        </button>
+        <button 
+          className={`bottom-nav-item ${activeTab === 'profile' ? 'active' : ''}`}
+          onClick={() => { setActiveTab('profile'); setSearchQuery(''); }}
+        >
+          <Settings size={18} />
+          Profile
+        </button>
+      </nav>
     </aside>
   );
 };
