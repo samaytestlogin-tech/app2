@@ -2002,3 +2002,6 @@ body {
   border-top: 2px solid var(--accent-purple);
   background: rgba(139, 92, 246, 0.05);
 }
+.tag-item.drag-handle {
+  user-select: none;
+}

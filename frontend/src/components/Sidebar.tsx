@@ -16,7 +16,8 @@ import {
   PinOff, 
   Clock,
   LayoutGrid,
-  ShieldAlert
+  ShieldAlert,
+  GripVertical
 } from 'lucide-react';
 import type { User, UserStatus, Room, StatusPermission } from '../types';
 import { socket, BACKEND_URL } from '../socket';
@@ -820,12 +821,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           className={`tag-item drag-handle ${activeDirectUser?.tag === user.tag ? 'active' : ''} ${dragOverId === id ? 'drag-over' : ''}`}
                           onClick={() => setActiveDirectUser(user)}
                           draggable
-                          onDragStart={() => handleDragStart(id)}
-                          onDragOver={(e) => handleDragOver(e, id)}
+                          onDragStart={(e) => {
+                            e.dataTransfer.effectAllowed = 'move';
+                            handleDragStart(id);
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            handleDragOver(e, id);
+                          }}
                           onDragLeave={handleDragLeave}
-                          onDrop={() => handleDrop(id, activeChatSpace === 'main_wall', activeChatSpace !== 'main_wall' ? activeChatSpace : undefined)}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleDrop(id, activeChatSpace === 'main_wall', activeChatSpace !== 'main_wall' ? activeChatSpace : undefined);
+                          }}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
+                            <div className="drag-grip" style={{ display: 'flex', alignItems: 'center', color: 'var(--text-muted)', cursor: 'grab', marginRight: '-4px' }} title="Drag to rearrange">
+                              <GripVertical size={14} />
+                            </div>
                             <div style={{ position: 'relative' }}>
                               <div className="user-avatar" style={{ width: '36px', height: '36px', fontSize: '1.2rem' }}>
                                 {user.avatar}
@@ -1006,12 +1020,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           className={`tag-item drag-handle ${activeTag === room.name ? 'active' : ''} ${dragOverId === id ? 'drag-over' : ''}`}
                           onClick={() => setActiveTag(room.name)}
                           draggable
-                          onDragStart={() => handleDragStart(id)}
-                          onDragOver={(e) => handleDragOver(e, id)}
+                          onDragStart={(e) => {
+                            e.dataTransfer.effectAllowed = 'move';
+                            handleDragStart(id);
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            handleDragOver(e, id);
+                          }}
                           onDragLeave={handleDragLeave}
-                          onDrop={() => handleDrop(id, activeGroupSpace === 'main_wall', activeGroupSpace !== 'main_wall' ? activeGroupSpace : undefined)}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleDrop(id, activeGroupSpace === 'main_wall', activeGroupSpace !== 'main_wall' ? activeGroupSpace : undefined);
+                          }}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
+                            <div className="drag-grip" style={{ display: 'flex', alignItems: 'center', color: 'var(--text-muted)', cursor: 'grab', marginRight: '-4px' }} title="Drag to rearrange">
+                              <GripVertical size={14} />
+                            </div>
                             <div className="tag-hash-icon" style={{ fontSize: '1.2rem', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: '50%' }}>#</div>
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ display: 'flex', alignItems: 'center', width: '100%', minWidth: 0 }}>
