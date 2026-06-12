@@ -36,6 +36,46 @@ const formatMessageDate = (timestamp: number) => {
   }
 };
 
+const getChannelGradient = (name: string) => {
+  const clean = name.trim().toLowerCase();
+  if (clean === 'music') return 'linear-gradient(135deg, #a855f7, #ec4899)'; // Purple to Pink
+  if (clean === 'gaming') return 'linear-gradient(135deg, #f97316, #eab308)'; // Orange to Yellow
+  if (clean === 'test_room') return 'linear-gradient(135deg, #06b6d4, #3b82f6)'; // Cyan to Blue
+  
+  const gradients = [
+    'linear-gradient(135deg, #3b82f6, #06b6d4)', // Blue-Cyan
+    'linear-gradient(135deg, #10b981, #059669)', // Emerald
+    'linear-gradient(135deg, #8b5cf6, #d946ef)', // Purple-Magenta
+    'linear-gradient(135deg, #f43f5e, #fb7185)', // Rose
+    'linear-gradient(135deg, #f59e0b, #d97706)', // Amber
+  ];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const index = Math.abs(hash) % gradients.length;
+  return gradients[index];
+};
+
+const getChannelInitials = (name: string) => {
+  const clean = name.replace(/^#+/, '').trim().toUpperCase();
+  if (clean.length === 0) return '#';
+  if (clean.length <= 2) return clean;
+  const parts = clean.split(/[\s_-]+/);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).substring(0, 2);
+  }
+  return clean.substring(0, 2);
+};
+
+const cleanRoomName = (name: string) => {
+  const clean = name.replace(/^#+/, '').trim();
+  return clean
+    .split(/[\s_-]+/)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+};
+
 export const ChatRoom: React.FC<ChatRoomProps> = ({
   currentUser,
   activeTag,
@@ -338,11 +378,26 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
               {activeDirectUser.avatar}
             </div>
           ) : (
-            <div className="tag-hash-icon">#</div>
+            <div className="room-avatar" style={{ 
+              background: activeTag ? getChannelGradient(activeTag) : 'var(--bg-tertiary)', 
+              color: 'white', 
+              fontWeight: 700, 
+              fontSize: '0.9rem', 
+              width: '40px', 
+              height: '40px', 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center', 
+              borderRadius: '12px',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              letterSpacing: '0.5px'
+            }}>
+              {activeTag ? getChannelInitials(activeTag) : '#'}
+            </div>
           )}
           <div>
             <div className="chat-header-title">
-              {isDirect ? activeDirectUser.username : `#${activeTag}`}
+              {isDirect ? activeDirectUser.username : cleanRoomName(activeTag || '')}
             </div>
             <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
               {isDirect ? (
@@ -353,7 +408,11 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                   </span>
                 </span>
               ) : (
-                `Tag chatroom (${activeMessages.length} messages)`
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ color: 'var(--accent-cyan)', fontWeight: 500 }}>#{activeTag?.toLowerCase()}</span>
+                  <span>•</span>
+                  <span>{activeMessages.length} {activeMessages.length === 1 ? 'message' : 'messages'}</span>
+                </span>
               )}
             </div>
           </div>
