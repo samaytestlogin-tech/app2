@@ -137,6 +137,38 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Assign to Space modal
   const [assignTarget, setAssignTarget] = useState<{ type: 'dm' | 'group'; tag: string; name: string } | null>(null);
 
+  // Custom timer states
+  const presets = [1, 6, 24, 72, 168];
+  const [isCustomTimer, setIsCustomTimer] = useState(!presets.includes(timerDurationHours));
+  const [customHoursInput, setCustomHoursInput] = useState(String(timerDurationHours));
+
+  useEffect(() => {
+    const isCustom = !presets.includes(timerDurationHours);
+    setIsCustomTimer(isCustom);
+    if (isCustom) {
+      setCustomHoursInput(String(timerDurationHours));
+    }
+  }, [timerDurationHours]);
+
+  const handleTimerSelectChange = (val: string) => {
+    if (val === 'custom') {
+      setIsCustomTimer(true);
+      const hours = Number(customHoursInput) || 24;
+      saveTimerDurationHours(hours);
+    } else {
+      setIsCustomTimer(false);
+      saveTimerDurationHours(Number(val));
+    }
+  };
+
+  const handleCustomHoursChange = (val: string) => {
+    setCustomHoursInput(val);
+    const num = Number(val);
+    if (!isNaN(num) && num > 0) {
+      saveTimerDurationHours(num);
+    }
+  };
+
   // Time tracker for countdown badges
   const [timeNow, setTimeNow] = useState<number>(Date.now());
   useEffect(() => {
@@ -1305,8 +1337,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </label>
               <select
                 className="form-input"
-                value={timerDurationHours}
-                onChange={(e) => saveTimerDurationHours(Number(e.target.value))}
+                value={isCustomTimer ? 'custom' : timerDurationHours}
+                onChange={(e) => handleTimerSelectChange(e.target.value)}
                 style={{ width: '100%', background: 'rgba(20, 15, 38, 0.8)', border: '1px solid var(--border-color)', color: 'white', padding: '10px 14px', borderRadius: '10px', outline: 'none' }}
               >
                 <option value={1}>1 Hour (Hyper clean)</option>
@@ -1314,7 +1346,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <option value={24}>1 Day (Recommended default)</option>
                 <option value={72}>3 Days (Casual checks)</option>
                 <option value={168}>1 Week (Low activity)</option>
+                <option value="custom">Custom...</option>
               </select>
+
+              {isCustomTimer && (
+                <div style={{ marginTop: '12px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
+                    Custom Duration (in Hours):
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    className="form-input"
+                    value={customHoursInput}
+                    onChange={(e) => handleCustomHoursChange(e.target.value)}
+                    style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', background: 'rgba(20, 15, 38, 0.8)', border: '1px solid var(--border-color)', color: 'white', outline: 'none' }}
+                  />
+                </div>
+              )}
               <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px', lineHeight: 1.4 }}>
                 Direct Messages and Group Channels will automatically leave the Main Wall and return to their assigned Spaces after this duration of inactivity.
               </p>
