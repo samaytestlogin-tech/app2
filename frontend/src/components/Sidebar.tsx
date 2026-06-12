@@ -140,20 +140,58 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Custom timer states
   const presets = [1, 6, 24, 72, 168];
   const [isCustomTimer, setIsCustomTimer] = useState(!presets.includes(timerDurationHours));
-  const [customHoursInput, setCustomHoursInput] = useState(String(timerDurationHours));
+
+  const getNaturalUnitAndValue = (hours: number): { value: number; unit: 'minutes' | 'hours' | 'days' | 'weeks' | 'months' } => {
+    if (hours <= 0) return { value: 24, unit: 'hours' };
+    
+    // If it's a multiple of a month (720 hours)
+    if (hours >= 720 && hours % 720 === 0) {
+      return { value: hours / 720, unit: 'months' };
+    }
+    // If it's a multiple of a week (168 hours)
+    if (hours >= 168 && hours % 168 === 0) {
+      return { value: hours / 168, unit: 'weeks' };
+    }
+    // If it's a multiple of a day (24 hours)
+    if (hours >= 24 && hours % 24 === 0) {
+      return { value: hours / 24, unit: 'days' };
+    }
+    // If it is less than 1 hour or has a fractional part, try minutes
+    const mins = Math.round(hours * 60);
+    if (hours < 1 || (hours % 1 !== 0 && mins % 1 === 0)) {
+      if (mins > 0) return { value: mins, unit: 'minutes' };
+    }
+    
+    return { value: hours, unit: 'hours' };
+  };
+
+  const initialNatural = getNaturalUnitAndValue(timerDurationHours);
+  const [customHoursValue, setCustomHoursValue] = useState<number>(initialNatural.value);
+  const [customHoursUnit, setCustomHoursUnit] = useState<'minutes' | 'hours' | 'days' | 'weeks' | 'months'>(initialNatural.unit);
+
+  const convertToHours = (val: number, unit: string): number => {
+    if (unit === 'minutes') return val / 60;
+    if (unit === 'hours') return val;
+    if (unit === 'days') return val * 24;
+    if (unit === 'weeks') return val * 168;
+    if (unit === 'months') return val * 720;
+    return val;
+  };
 
   useEffect(() => {
     const isCustom = !presets.includes(timerDurationHours);
     setIsCustomTimer(isCustom);
     if (isCustom) {
-      setCustomHoursInput(String(timerDurationHours));
+      const natural = getNaturalUnitAndValue(timerDurationHours);
+      setCustomHoursValue(natural.value);
+      setCustomHoursUnit(natural.unit);
     }
   }, [timerDurationHours]);
 
   const handleTimerSelectChange = (val: string) => {
     if (val === 'custom') {
       setIsCustomTimer(true);
-      const hours = Number(customHoursInput) || 24;
+      const hours = convertToHours(customHoursValue, customHoursUnit);
       saveTimerDurationHours(hours);
     } else {
       setIsCustomTimer(false);
@@ -161,12 +199,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  const handleCustomHoursChange = (val: string) => {
-    setCustomHoursInput(val);
+  const handleCustomValueChange = (val: string) => {
     const num = Number(val);
     if (!isNaN(num) && num > 0) {
-      saveTimerDurationHours(num);
+      setCustomHoursValue(num);
+      const hours = convertToHours(num, customHoursUnit);
+      saveTimerDurationHours(hours);
+    } else {
+      setCustomHoursValue(0);
     }
+  };
+
+  const handleCustomUnitChange = (unit: 'minutes' | 'hours' | 'days' | 'weeks' | 'months') => {
+    setCustomHoursUnit(unit);
+    const hours = convertToHours(customHoursValue, unit);
+    saveTimerDurationHours(hours);
   };
 
   // Time tracker for countdown badges
@@ -1350,18 +1397,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </select>
 
               {isCustomTimer && (
-                <div style={{ marginTop: '12px' }}>
-                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
-                    Custom Duration (in Hours):
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    className="form-input"
-                    value={customHoursInput}
-                    onChange={(e) => handleCustomHoursChange(e.target.value)}
-                    style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', background: 'rgba(20, 15, 38, 0.8)', border: '1px solid var(--border-color)', color: 'white', outline: 'none' }}
-                  />
+                <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
+                      Custom Value:
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      className="form-input"
+                      value={customHoursValue || ''}
+                      onChange={(e) => handleCustomValueChange(e.target.value)}
+                      style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', background: 'rgba(20, 15, 38, 0.8)', border: '1px solid var(--border-color)', color: 'white', outline: 'none' }}
+                    />
+                  </div>
+                  <div style={{ width: '110px' }}>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
+                      Unit:
+                    </label>
+                    <select
+                      className="form-input"
+                      value={customHoursUnit}
+                      onChange={(e) => handleCustomUnitChange(e.target.value as any)}
+                      style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', background: 'rgba(20, 15, 38, 0.8)', border: '1px solid var(--border-color)', color: 'white', outline: 'none' }}
+                    >
+                      <option value="minutes">Minutes</option>
+                      <option value="hours">Hours</option>
+                      <option value="days">Days</option>
+                      <option value="weeks">Weeks</option>
+                      <option value="months">Months</option>
+                    </select>
+                  </div>
                 </div>
               )}
               <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px', lineHeight: 1.4 }}>
