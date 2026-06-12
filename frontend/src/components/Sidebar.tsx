@@ -91,6 +91,46 @@ const getSpaceInitials = (name: string) => {
   return clean.substring(0, 2);
 };
 
+const getChannelGradient = (name: string) => {
+  const clean = name.trim().toLowerCase();
+  if (clean === 'music') return 'linear-gradient(135deg, #a855f7, #ec4899)'; // Purple to Pink
+  if (clean === 'gaming') return 'linear-gradient(135deg, #f97316, #eab308)'; // Orange to Yellow
+  if (clean === 'test_room') return 'linear-gradient(135deg, #06b6d4, #3b82f6)'; // Cyan to Blue
+  
+  const gradients = [
+    'linear-gradient(135deg, #3b82f6, #06b6d4)', // Blue-Cyan
+    'linear-gradient(135deg, #10b981, #059669)', // Emerald
+    'linear-gradient(135deg, #8b5cf6, #d946ef)', // Purple-Magenta
+    'linear-gradient(135deg, #f43f5e, #fb7185)', // Rose
+    'linear-gradient(135deg, #f59e0b, #d97706)', // Amber
+  ];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const index = Math.abs(hash) % gradients.length;
+  return gradients[index];
+};
+
+const getChannelInitials = (name: string) => {
+  const clean = name.replace(/^#+/, '').trim().toUpperCase();
+  if (clean.length === 0) return '#';
+  if (clean.length <= 2) return clean;
+  const parts = clean.split(/[\s_-]+/);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).substring(0, 2);
+  }
+  return clean.substring(0, 2);
+};
+
+const cleanRoomName = (name: string) => {
+  const clean = name.replace(/^#+/, '').trim();
+  return clean
+    .split(/[\s_-]+/)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+};
+
 export const Sidebar: React.FC<SidebarProps> = ({
   currentUser,
   activeTab,
@@ -1014,6 +1054,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     {pinnedGroups.map((room) => {
                       const id = `group:${room.name}`;
                       const unreadCount = unreadRooms[room.name] || 0;
+                      const initials = getChannelInitials(room.name);
+                      const grad = getChannelGradient(room.name);
                       return (
                         <div
                           key={room.name}
@@ -1039,13 +1081,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             <div className="drag-grip" style={{ display: 'flex', alignItems: 'center', color: 'var(--text-muted)', cursor: 'grab', marginRight: '-4px' }} title="Drag to rearrange">
                               <GripVertical size={14} />
                             </div>
-                            <div className="tag-hash-icon" style={{ fontSize: '1.2rem', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: '50%' }}>#</div>
+                            <div className="room-avatar" style={{ 
+                              background: grad, 
+                              color: 'white', 
+                              fontWeight: 700, 
+                              fontSize: '0.85rem', 
+                              width: '36px', 
+                              height: '36px', 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              justifyContent: 'center', 
+                              borderRadius: '12px',
+                              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                              letterSpacing: '0.5px'
+                            }}>
+                              {initials}
+                            </div>
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ display: 'flex', alignItems: 'center', width: '100%', minWidth: 0 }}>
-                                <span className="tag-title" style={{ fontWeight: 600, color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                  #{room.name}
+                                <span className="tag-title" style={{ fontWeight: 600, color: 'var(--text-main)', fontSize: '0.92rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {cleanRoomName(room.name)}
                                 </span>
                                 {renderMultiSpaceBadge(id)}
+                              </div>
+                              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                                <span style={{ color: 'var(--accent-purple)', fontWeight: 500 }}>#{room.name.toLowerCase()}</span>
+                                {room.creator_tag && (
+                                  <>
+                                    <span>•</span>
+                                    <span>by @{room.creator_tag}</span>
+                                  </>
+                                )}
                               </div>
                             </div>
                             {unreadCount > 0 && <div className="unread-badge">{unreadCount}</div>}
@@ -1066,6 +1132,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     const id = `group:${room.name}`;
                     const unreadCount = unreadRooms[room.name] || 0;
                     const lastMsgTime = roomLastMessage[room.name] || 0;
+                    const initials = getChannelInitials(room.name);
+                    const grad = getChannelGradient(room.name);
                     return (
                       <div
                         key={room.name}
@@ -1073,14 +1141,38 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         onClick={() => setActiveTag(room.name)}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
-                          <div className="tag-hash-icon" style={{ fontSize: '1.2rem', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.03)', borderRadius: '50%' }}>#</div>
+                          <div className="room-avatar" style={{ 
+                            background: grad, 
+                            color: 'white', 
+                            fontWeight: 700, 
+                            fontSize: '0.85rem', 
+                            width: '36px', 
+                            height: '36px', 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'center', 
+                            borderRadius: '12px',
+                            boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                            letterSpacing: '0.5px'
+                          }}>
+                            {initials}
+                          </div>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ display: 'flex', alignItems: 'center', width: '100%', minWidth: 0 }}>
-                              <span className="tag-title" style={{ fontWeight: 500, color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                #{room.name}
+                              <span className="tag-title" style={{ fontWeight: 600, color: 'var(--text-main)', fontSize: '0.92rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {cleanRoomName(room.name)}
                               </span>
                               {renderMultiSpaceBadge(id)}
                               {activeGroupSpace === 'main_wall' && renderCountdown(id, lastMsgTime)}
+                            </div>
+                            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                              <span style={{ color: 'var(--accent-cyan)', fontWeight: 500 }}>#{room.name.toLowerCase()}</span>
+                              {room.creator_tag && (
+                                <>
+                                  <span>•</span>
+                                  <span>by @{room.creator_tag}</span>
+                                </>
+                              )}
                             </div>
                           </div>
                           {unreadCount > 0 && <div className="unread-badge">{unreadCount}</div>}
