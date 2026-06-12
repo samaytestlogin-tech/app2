@@ -14,7 +14,9 @@ import {
   FolderPlus, 
   Pin, 
   PinOff, 
-  Clock 
+  Clock,
+  LayoutGrid,
+  ShieldAlert
 } from 'lucide-react';
 import type { User, UserStatus, Room, StatusPermission } from '../types';
 import { socket, BACKEND_URL } from '../socket';
@@ -53,6 +55,38 @@ interface SidebarProps {
   timerDurationHours: number;
   saveTimerDurationHours: (hours: number) => void;
 }
+
+const getSpaceColor = (name: string) => {
+  const lower = name.toLowerCase();
+  if (lower === 'work') return '#2563eb'; // Blue
+  if (lower === 'family') return '#c2410c'; // Red-orange
+  if (lower === 'cousins' || lower === 'friends') return '#0f766e'; // Green-teal
+  
+  const colors = [
+    '#3b82f6', // Blue
+    '#ea580c', // Orange-red
+    '#0d9488', // Teal
+    '#8b5cf6', // Purple
+    '#db2777', // Pink
+    '#d97706', // Amber
+  ];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const index = Math.abs(hash) % colors.length;
+  return colors[index];
+};
+
+const getSpaceInitials = (name: string) => {
+  const clean = name.trim().toUpperCase();
+  if (clean.length <= 2) return clean;
+  const parts = clean.split(/\s+/);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).substring(0, 2);
+  }
+  return clean.substring(0, 2);
+};
 
 export const Sidebar: React.FC<SidebarProps> = ({
   currentUser,
@@ -662,31 +696,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         
         {activeTab === 'chats' ? (
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            {/* Space Strip */}
-            <div className="space-strip">
-              <button 
-                className={`space-pill ${activeChatSpace === 'main_wall' ? 'active' : ''}`}
-                onClick={() => setActiveChatSpace('main_wall')}
-              >
-                Main wall
-              </button>
-              {spaces.map(space => (
-                <button
-                  key={space}
-                  className={`space-pill ${activeChatSpace === space ? 'active' : ''}`}
-                  onClick={() => setActiveChatSpace(space)}
-                >
-                  {space}
-                </button>
-              ))}
-              <button 
-                className={`space-pill ${activeChatSpace === 'unassigned' ? 'active' : ''}`}
-                onClick={() => setActiveChatSpace('unassigned')}
-              >
-                Unassigned
-              </button>
-            </div>
-
             {/* Search */}
             <div className="search-container" style={{ padding: '12px 16px 4px 16px' }}>
               <div className="search-box" style={{ position: 'relative', width: '100%' }}>
@@ -803,34 +812,43 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 )}
               </div>
             </div>
+
+            {/* Circular Space Strip at the Bottom */}
+            <div className="space-strip">
+              <div 
+                className={`space-circle-container ${activeChatSpace === 'main_wall' ? 'active' : ''}`}
+                onClick={() => setActiveChatSpace('main_wall')}
+              >
+                <div className="space-circle" style={{ backgroundColor: 'var(--accent-purple)' }}>
+                  <LayoutGrid size={20} />
+                </div>
+                <span className="space-circle-label">Main</span>
+              </div>
+              {spaces.map(space => (
+                <div 
+                  key={space}
+                  className={`space-circle-container ${activeChatSpace === space ? 'active' : ''}`}
+                  onClick={() => setActiveChatSpace(space)}
+                >
+                  <div className="space-circle" style={{ backgroundColor: getSpaceColor(space) }}>
+                    {getSpaceInitials(space)}
+                  </div>
+                  <span className="space-circle-label">{space}</span>
+                </div>
+              ))}
+              <div 
+                className={`space-circle-container ${activeChatSpace === 'unassigned' ? 'active' : ''}`}
+                onClick={() => setActiveChatSpace('unassigned')}
+              >
+                <div className="space-circle" style={{ backgroundColor: '#27272a' }}>
+                  <ShieldAlert size={20} />
+                </div>
+                <span className="space-circle-label">Unassigned</span>
+              </div>
+            </div>
           </div>
         ) : activeTab === 'groups' ? (
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            {/* Space Strip */}
-            <div className="space-strip">
-              <button 
-                className={`space-pill ${activeGroupSpace === 'main_wall' ? 'active' : ''}`}
-                onClick={() => setActiveGroupSpace('main_wall')}
-              >
-                Main wall
-              </button>
-              {spaces.map(space => (
-                <button
-                  key={space}
-                  className={`space-pill ${activeGroupSpace === space ? 'active' : ''}`}
-                  onClick={() => setActiveGroupSpace(space)}
-                >
-                  {space}
-                </button>
-              ))}
-              <button 
-                className={`space-pill ${activeGroupSpace === 'unassigned' ? 'active' : ''}`}
-                onClick={() => setActiveGroupSpace('unassigned')}
-              >
-                Unassigned
-              </button>
-            </div>
-
             {/* Search */}
             <div className="search-container" style={{ padding: '12px 16px 4px 16px' }}>
               <div className="search-box" style={{ position: 'relative', width: '100%' }}>
@@ -958,6 +976,40 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     No group tags in this space.
                   </div>
                 )}
+              </div>
+            </div>
+
+            {/* Circular Space Strip at the Bottom */}
+            <div className="space-strip">
+              <div 
+                className={`space-circle-container ${activeGroupSpace === 'main_wall' ? 'active' : ''}`}
+                onClick={() => setActiveGroupSpace('main_wall')}
+              >
+                <div className="space-circle" style={{ backgroundColor: 'var(--accent-purple)' }}>
+                  <LayoutGrid size={20} />
+                </div>
+                <span className="space-circle-label">Main</span>
+              </div>
+              {spaces.map(space => (
+                <div 
+                  key={space}
+                  className={`space-circle-container ${activeGroupSpace === space ? 'active' : ''}`}
+                  onClick={() => setActiveGroupSpace(space)}
+                >
+                  <div className="space-circle" style={{ backgroundColor: getSpaceColor(space) }}>
+                    {getSpaceInitials(space)}
+                  </div>
+                  <span className="space-circle-label">{space}</span>
+                </div>
+              ))}
+              <div 
+                className={`space-circle-container ${activeGroupSpace === 'unassigned' ? 'active' : ''}`}
+                onClick={() => setActiveGroupSpace('unassigned')}
+              >
+                <div className="space-circle" style={{ backgroundColor: '#27272a' }}>
+                  <ShieldAlert size={20} />
+                </div>
+                <span className="space-circle-label">Unassigned</span>
               </div>
             </div>
           </div>
