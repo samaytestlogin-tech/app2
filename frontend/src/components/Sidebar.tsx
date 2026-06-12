@@ -54,6 +54,8 @@ interface SidebarProps {
   saveKeepOnWall: (keep: string[]) => void;
   timerDurationHours: number;
   saveTimerDurationHours: (hours: number) => void;
+  warnOnMultiSpace: boolean;
+  saveWarnOnMultiSpace: (warn: boolean) => void;
 }
 
 const getSpaceColor = (name: string) => {
@@ -120,6 +122,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   saveKeepOnWall,
   timerDurationHours,
   saveTimerDurationHours,
+  warnOnMultiSpace,
+  saveWarnOnMultiSpace,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [newTag, setNewTag] = useState('');
@@ -321,6 +325,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (currentAssigned.includes(spaceName)) {
       newAssigned = currentAssigned.filter(s => s !== spaceName);
     } else {
+      if (warnOnMultiSpace && currentAssigned.length > 0) {
+        const targetName = assignTarget.type === 'group' ? `#${assignTarget.name}` : `@${assignTarget.tag}`;
+        const spacesList = currentAssigned.join(', ');
+        const confirmed = window.confirm(
+          `${targetName} is already present in "${spacesList}" space. Do you still want to add this user here as well?`
+        );
+        if (!confirmed) return;
+      }
       newAssigned = [...currentAssigned, spaceName];
     }
     saveSpaceAssignments({
@@ -1432,6 +1444,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
               )}
               <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px', lineHeight: 1.4 }}>
                 Direct Messages and Group Channels will automatically leave the Main Wall and return to their assigned Spaces after this duration of inactivity.
+              </p>
+            </div>
+
+            {/* Multi-space warning preference */}
+            <div className="settings-group" style={{ padding: '0 16px 20px 16px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={warnOnMultiSpace}
+                  onChange={(e) => saveWarnOnMultiSpace(e.target.checked)}
+                  style={{ cursor: 'pointer', width: '16px', height: '16px' }}
+                />
+                <span style={{ fontWeight: 600, color: 'var(--accent-purple)', fontSize: '0.9rem' }}>
+                  Warn when assigning to multiple spaces
+                </span>
+              </label>
+              <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px', lineHeight: 1.4, paddingLeft: '26px' }}>
+                Show a confirmation dialog if you add a conversation to a space when it is already assigned to other spaces.
               </p>
             </div>
 

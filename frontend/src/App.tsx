@@ -32,6 +32,7 @@ function App() {
   const [spacePins, setSpacePins] = useState<{ [spaceName: string]: string[] }>({});
   const [keepOnWall, setKeepOnWall] = useState<string[]>([]);
   const [timerDurationHours, setTimerDurationHours] = useState<number>(24);
+  const [warnOnMultiSpace, setWarnOnMultiSpace] = useState<boolean>(true);
 
   useEffect(() => {
     if (!currentUser) {
@@ -41,6 +42,7 @@ function App() {
       setSpacePins({});
       setKeepOnWall([]);
       setTimerDurationHours(24);
+      setWarnOnMultiSpace(true);
       return;
     }
 
@@ -95,6 +97,14 @@ function App() {
     } else {
       setTimerDurationHours(24);
     }
+
+    // Load warn settings
+    const cachedWarn = localStorage.getItem(`${tag}_warn_on_multi_space`);
+    if (cachedWarn !== null) {
+      setWarnOnMultiSpace(cachedWarn === 'true');
+    } else {
+      setWarnOnMultiSpace(true);
+    }
   }, [currentUser]);
 
   const saveSpaces = (newSpaces: string[]) => {
@@ -131,6 +141,12 @@ function App() {
     if (!currentUser) return;
     setTimerDurationHours(hours);
     localStorage.setItem(`${currentUser.tag}_timer_hours`, String(hours));
+  };
+
+  const saveWarnOnMultiSpace = (warn: boolean) => {
+    if (!currentUser) return;
+    setWarnOnMultiSpace(warn);
+    localStorage.setItem(`${currentUser.tag}_warn_on_multi_space`, String(warn));
   };
   
   // Messages & Social Feeds
@@ -1175,6 +1191,8 @@ function App() {
         saveKeepOnWall={saveKeepOnWall}
         timerDurationHours={timerDurationHours}
         saveTimerDurationHours={saveTimerDurationHours}
+        warnOnMultiSpace={warnOnMultiSpace}
+        saveWarnOnMultiSpace={saveWarnOnMultiSpace}
       />
 
       {(activeTag || activeDirectUser) ? (
