@@ -33,6 +33,7 @@ function App() {
   const [keepOnWall, setKeepOnWall] = useState<string[]>([]);
   const [timerDurationHours, setTimerDurationHours] = useState<number>(24);
   const [warnOnMultiSpace, setWarnOnMultiSpace] = useState<boolean>(true);
+  const [showCountdown, setShowCountdown] = useState<boolean>(true);
 
   useEffect(() => {
     if (!currentUser) {
@@ -43,6 +44,7 @@ function App() {
       setKeepOnWall([]);
       setTimerDurationHours(24);
       setWarnOnMultiSpace(true);
+      setShowCountdown(true);
       return;
     }
 
@@ -105,6 +107,14 @@ function App() {
     } else {
       setWarnOnMultiSpace(true);
     }
+
+    // Load countdown setting
+    const cachedShowCountdown = localStorage.getItem(`${tag}_show_countdown`);
+    if (cachedShowCountdown !== null) {
+      setShowCountdown(cachedShowCountdown === 'true');
+    } else {
+      setShowCountdown(true);
+    }
   }, [currentUser]);
 
   const saveSpaces = (newSpaces: string[]) => {
@@ -147,6 +157,12 @@ function App() {
     if (!currentUser) return;
     setWarnOnMultiSpace(warn);
     localStorage.setItem(`${currentUser.tag}_warn_on_multi_space`, String(warn));
+  };
+
+  const saveShowCountdown = (val: boolean) => {
+    if (!currentUser) return;
+    setShowCountdown(val);
+    localStorage.setItem(`${currentUser.tag}_show_countdown`, String(val));
   };
   
   // Messages & Social Feeds
@@ -1193,6 +1209,8 @@ function App() {
         saveTimerDurationHours={saveTimerDurationHours}
         warnOnMultiSpace={warnOnMultiSpace}
         saveWarnOnMultiSpace={saveWarnOnMultiSpace}
+        showCountdown={showCountdown}
+        saveShowCountdown={saveShowCountdown}
       />
 
       {(activeTag || activeDirectUser) ? (

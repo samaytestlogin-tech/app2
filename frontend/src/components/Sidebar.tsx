@@ -57,6 +57,8 @@ interface SidebarProps {
   saveTimerDurationHours: (hours: number) => void;
   warnOnMultiSpace: boolean;
   saveWarnOnMultiSpace: (warn: boolean) => void;
+  showCountdown: boolean;
+  saveShowCountdown: (val: boolean) => void;
 }
 
 const getSpaceColor = (name: string) => {
@@ -165,6 +167,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   saveTimerDurationHours,
   warnOnMultiSpace,
   saveWarnOnMultiSpace,
+  showCountdown,
+  saveShowCountdown,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [newTag, setNewTag] = useState('');
@@ -561,6 +565,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   // Helper renderers for badges and buttons on chat rows
   const renderCountdown = (chatId: string, lastMsgTime: number) => {
+    if (!showCountdown) return null;
     if (keepOnWall.includes(chatId)) return null;
     if (lastMsgTime <= 0) return null;
     const remainingMs = lastMsgTime + timerDurationHours * 3600000 - timeNow;
@@ -1581,6 +1586,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </label>
               <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px', lineHeight: 1.4, paddingLeft: '26px' }}>
                 Show a confirmation dialog if you add a conversation to a space when it is already assigned to other spaces.
+              </p>
+            </div>
+
+            {/* Show time remaining preference */}
+            <div className="settings-group" style={{ padding: '0 16px 20px 16px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={showCountdown}
+                  onChange={(e) => saveShowCountdown(e.target.checked)}
+                  style={{ cursor: 'pointer', width: '16px', height: '16px' }}
+                />
+                <span style={{ fontWeight: 600, color: 'var(--accent-cyan)', fontSize: '0.9rem' }}>
+                  Show cleanup countdown timers
+                </span>
+              </label>
+              <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px', lineHeight: 1.4, paddingLeft: '26px' }}>
+                Display the time remaining before a conversation automatically leaves the Main Wall.
               </p>
             </div>
 
