@@ -17,7 +17,8 @@ import {
   Clock,
   LayoutGrid,
   ShieldAlert,
-  GripVertical
+  GripVertical,
+  Globe
 } from 'lucide-react';
 import type { User, UserStatus, Room, StatusPermission } from '../types';
 import { socket, BACKEND_URL } from '../socket';
@@ -689,16 +690,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return matchesSearch;
   });
 
-  // Partition DMs into pinned and active
-  const { pinnedDMs, activeDMs } = React.useMemo(() => {
+  // Partition DMs into pinned, active, and global matches
+  const { pinnedDMs, activeDMs, globalMatches } = React.useMemo(() => {
     const chatId = (tag: string) => `dm:${tag}`;
 
     // Filter list based on selected space
     let baseList = [...filteredUsers];
+    let globalList: typeof filteredUsers = [];
 
     if (activeChatSpace === 'main_wall') {
       // Main wall filters out things that are expired (not pinned, not kept, activity > global timer)
-      baseList = baseList.filter(u => {
+      const mainWallMatches = baseList.filter(u => {
         const id = chatId(u.tag);
         if (mainWallPins.includes(id)) return true;
         if (keepOnWall.includes(id)) return true;
@@ -709,6 +711,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
         const ageHours = (timeNow - lastMsgTime) / 3600000;
         return ageHours < timerDurationHours;
       });
+
+      // Global matches are users who match the search but are NOT on the main wall
+      // Only compute and show global matches if search query is active
+      if (searchQuery.trim() !== '') {
+        const mainWallTags = new Set(mainWallMatches.map(u => u.tag));
+        globalList = baseList.filter(u => !mainWallTags.has(u.tag));
+      }
+
+      baseList = mainWallMatches;
     } else if (activeChatSpace === 'unassigned') {
       // Unassigned contains chats with activity that have no space assignments
       baseList = baseList.filter(u => {
@@ -757,8 +768,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       return timeB - timeA;
     });
 
-    return { pinnedDMs: pinnedList, activeDMs: activeList };
-  }, [filteredUsers, activeChatSpace, mainWallPins, spacePins, keepOnWall, spaceAssignments, directLastMessage, timeNow, timerDurationHours]);
+    // Sort Global List by username
+    globalList.sort((a, b) => a.username.localeCompare(b.username));
+
+    return { pinnedDMs: pinnedList, activeDMs: activeList, globalMatches: globalList };
+  }, [filteredUsers, activeChatSpace, mainWallPins, spacePins, keepOnWall, spaceAssignments, directLastMessage, timeNow, timerDurationHours, searchQuery]);
 
 
   // ----------------------------------------------------
@@ -976,6 +990,61 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* Global Search Section */}
+              {activeChatSpace === 'main_wall' && globalMatches.length > 0 && (
+                <>
+                  <div className="tag-list-label" style={{ 
+                    padding: '24px 12px 6px 12px', 
+                    color: 'var(--accent-cyan)', 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '6px',
+                    borderTop: '1px solid rgba(255, 255, 255, 0.06)',
+                    marginTop: '16px'
+                  }}>
+                    <Globe size={13} /> Global Platform Users
+                  </div>
+                  <div className="tag-items">
+                    {globalMatches.map((user) => {
+                      const id = `dm:${user.tag}`;
+                      const unreadCount = unreadDirects[user.tag] || 0;
+                      const lastMsgTime = directLastMessage[user.tag] || 0;
+                      return (
+                        <div
+                          key={user.tag}
+                          className={`tag-item ${activeDirectUser?.tag === user.tag ? 'active' : ''}`}
+                          onClick={() => setActiveDirectUser(user)}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
+                            <div style={{ position: 'relative' }}>
+                              <div className="user-avatar" style={{ width: '36px', height: '36px', fontSize: '1.2rem' }}>
+                                {user.avatar}
+                              </div>
+                              {user.online && (
+                                <div style={{ position: 'absolute', bottom: '-2px', right: '-2px', width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#2ec4b6', border: '2px solid var(--bg-dark)' }} />
+                              )}
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', width: '100%', minWidth: 0 }}>
+                                <span style={{ fontWeight: 500, color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {user.username}
+                                </span>
+                                {renderMultiSpaceBadge(id)}
+                              </div>
+                              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                @{user.tag}
+                              </div>
+                            </div>
+                            {unreadCount > 0 && <div className="unread-badge">{unreadCount}</div>}
+                            {renderChatActions(id, false, undefined, lastMsgTime)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Circular Space Strip at the Bottom */}
