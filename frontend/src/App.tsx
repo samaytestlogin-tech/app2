@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatRoom } from './components/ChatRoom';
 import { StatusFeed } from './components/StatusFeed';
+import { CustomDialog } from './components/CustomDialog';
 import type { User, Message, DirectMessage, UserStatus, Room } from './types';
 import { socket, BACKEND_URL } from './socket';
 import { Phone, PhoneOff, Mic, MicOff } from 'lucide-react';
@@ -34,6 +35,62 @@ function App() {
   const [timerDurationHours, setTimerDurationHours] = useState<number>(24);
   const [warnOnMultiSpace, setWarnOnMultiSpace] = useState<boolean>(true);
   const [showCountdown, setShowCountdown] = useState<boolean>(true);
+
+  // Custom Dialog state for premium alerts and confirmations
+  const [customDialog, setCustomDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'confirm' | 'alert';
+    confirmText?: string;
+    cancelText?: string;
+    resolveRef: { current: ((value: boolean) => void) | null };
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'alert',
+    resolveRef: { current: null }
+  });
+
+  const showConfirm = (title: string, message: string, confirmText?: string, cancelText?: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      setCustomDialog({
+        isOpen: true,
+        title,
+        message,
+        type: 'confirm',
+        confirmText,
+        cancelText,
+        resolveRef: { current: resolve }
+      });
+    });
+  };
+
+  const showAlert = (title: string, message: string, confirmText?: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      setCustomDialog({
+        isOpen: true,
+        title,
+        message,
+        type: 'alert',
+        confirmText,
+        resolveRef: { current: resolve }
+      });
+    });
+  };
+
+  const handleDialogConfirm = () => {
+    const resolve = customDialog.resolveRef.current;
+    setCustomDialog(prev => ({ ...prev, isOpen: false }));
+    if (resolve) resolve(true);
+  };
+
+  const handleDialogCancel = () => {
+    const resolve = customDialog.resolveRef.current;
+    setCustomDialog(prev => ({ ...prev, isOpen: false }));
+    if (resolve) resolve(false);
+  };
 
   useEffect(() => {
     if (!currentUser) {
@@ -861,7 +918,7 @@ function App() {
 
     socket.on('call_rejected', () => {
       cleanupCall();
-      alert('Call declined');
+      showAlert('Call Declined', 'The recipient declined the call.');
     });
 
     socket.on('call_ended', () => {
@@ -1211,6 +1268,8 @@ function App() {
         saveWarnOnMultiSpace={saveWarnOnMultiSpace}
         showCountdown={showCountdown}
         saveShowCountdown={saveShowCountdown}
+        showConfirm={showConfirm}
+        showAlert={showAlert}
       />
 
       {(activeTag || activeDirectUser) ? (
@@ -1298,6 +1357,17 @@ function App() {
       )}
 
       <audio ref={remoteAudioRef} autoPlay style={{ display: 'none' }} />
+
+      <CustomDialog
+        isOpen={customDialog.isOpen}
+        title={customDialog.title}
+        message={customDialog.message}
+        type={customDialog.type}
+        confirmText={customDialog.confirmText}
+        cancelText={customDialog.cancelText}
+        onConfirm={handleDialogConfirm}
+        onCancel={handleDialogCancel}
+      />
     </div>
   );
 }

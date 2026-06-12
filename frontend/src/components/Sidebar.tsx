@@ -59,6 +59,8 @@ interface SidebarProps {
   saveWarnOnMultiSpace: (warn: boolean) => void;
   showCountdown: boolean;
   saveShowCountdown: (val: boolean) => void;
+  showConfirm: (title: string, message: string, confirmText?: string, cancelText?: string) => Promise<boolean>;
+  showAlert: (title: string, message: string, confirmText?: string) => Promise<boolean>;
 }
 
 const getSpaceColor = (name: string) => {
@@ -169,6 +171,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   saveWarnOnMultiSpace,
   showCountdown,
   saveShowCountdown,
+  showConfirm,
+  showAlert,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [newTag, setNewTag] = useState('');
@@ -307,17 +311,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const clean = newSpaceName.trim();
     if (!clean) return;
     if (spaces.includes(clean)) {
-      alert("Space already exists!");
+      showAlert("Space Warning", "Space already exists!");
       return;
     }
     saveSpaces([...spaces, clean]);
     setNewSpaceName('');
   };
 
-  const handleDeleteSpace = (spaceName: string) => {
-    if (!confirm(`Are you sure you want to delete the space "${spaceName}"? Conversations will remain in Unassigned or other spaces.`)) {
-      return;
-    }
+  const handleDeleteSpace = async (spaceName: string) => {
+    const confirmed = await showConfirm(
+      "Delete Space",
+      `Are you sure you want to delete the space "${spaceName}"?\nConversations will remain in Unassigned or other spaces.`,
+      "Delete",
+      "Cancel"
+    );
+    if (!confirmed) return;
     saveSpaces(spaces.filter(s => s !== spaceName));
 
     const updatedAssignments = { ...spaceAssignments };
@@ -340,7 +348,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const clean = newName.trim();
     if (!clean || clean === spaceName) return;
     if (spaces.includes(clean)) {
-      alert("Space already exists!");
+      showAlert("Space Warning", "Space already exists!");
       return;
     }
     saveSpaces(spaces.map(s => s === spaceName ? clean : s));
@@ -362,7 +370,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (activeGroupSpace === spaceName) setActiveGroupSpace(clean);
   };
 
-  const handleToggleSpaceAssign = (spaceName: string) => {
+  const handleToggleSpaceAssign = async (spaceName: string) => {
     if (!assignTarget) return;
     const chatId = `${assignTarget.type}:${assignTarget.tag}`;
     const currentAssigned = spaceAssignments[chatId] || [];
@@ -373,8 +381,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (warnOnMultiSpace && currentAssigned.length > 0) {
         const targetName = assignTarget.type === 'group' ? `#${assignTarget.name}` : `@${assignTarget.tag}`;
         const spacesList = currentAssigned.join(', ');
-        const confirmed = window.confirm(
-          `${targetName} is already present in "${spacesList}" space. Do you still want to add this user here as well?`
+        const confirmed = await showConfirm(
+          "Space Warning",
+          `${targetName} is already present in "${spacesList}" space.\nDo you still want to add this user here as well?`,
+          "Add anyway",
+          "Cancel"
         );
         if (!confirmed) return;
       }
@@ -530,7 +541,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           setActiveTag(cleanNewName);
         }
       } else {
-        alert('Failed to rename group. You may not be authorized.');
+        showAlert('Rename Failed', 'Failed to rename group. You may not be authorized.');
       }
     } catch (err) {
       console.error('Failed to rename group', err);
@@ -538,9 +549,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const handleDeleteRoom = async (roomName: string) => {
-    if (!confirm(`Are you sure you want to delete group #${roomName}? All messages inside will be permanently deleted.`)) {
-      return;
-    }
+    const confirmed = await showConfirm(
+      "Delete Group",
+      `Are you sure you want to delete group #${roomName}?\nAll messages inside will be permanently deleted.`,
+      "Delete",
+      "Cancel"
+    );
+    if (!confirmed) return;
 
     try {
       const res = await fetch(`${BACKEND_URL}/api/rooms/${roomName}`, {
@@ -556,7 +571,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           setActiveTag(null);
         }
       } else {
-        alert('Failed to delete group. You may not be authorized.');
+        showAlert('Delete Failed', 'Failed to delete group. You may not be authorized.');
       }
     } catch (err) {
       console.error('Failed to delete group', err);

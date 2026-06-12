@@ -14,6 +14,7 @@ interface ChatRoomProps {
   directMessages: DirectMessage[];
   onBackToSidebar: () => void;
   onStartCall?: (target: User) => void;
+  showAlert?: (title: string, message: string) => Promise<boolean>;
 }
 
 const formatMessageDate = (timestamp: number) => {
@@ -84,6 +85,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   directMessages,
   onBackToSidebar,
   onStartCall,
+  showAlert,
 }) => {
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -337,7 +339,11 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
       }, 1000);
     } catch (err) {
       console.error('Microphone access failed', err);
-      alert('Could not access microphone for voice message');
+      if (showAlert) {
+        showAlert('Audio Error', 'Could not access microphone for voice message');
+      } else {
+        alert('Could not access microphone for voice message');
+      }
     }
   };
 
