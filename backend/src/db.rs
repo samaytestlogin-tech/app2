@@ -96,6 +96,29 @@ where
     block_on(future)
 }
 
+use std::sync::{Arc, RwLock};
+use std::time::{Instant, Duration};
+use std::collections::HashMap;
+
+#[derive(Clone)]
+struct CacheEntry<T> {
+    data: T,
+    expires_at: Instant,
+}
+
+impl<T> CacheEntry<T> {
+    fn new(data: T, ttl: Duration) -> Self {
+        Self {
+            data,
+            expires_at: Instant::now() + ttl,
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        Instant::now() > self.expires_at
+    }
+}
+
 #[derive(Clone)]
 pub struct Db {
     client: Client,
@@ -104,6 +127,11 @@ pub struct Db {
     api_key: String,
     database_id: String,
     bucket_id: String,
+    
+    users_cache: Arc<RwLock<Option<CacheEntry<Vec<DbUser>>>>>,
+    rooms_cache: Arc<RwLock<Option<CacheEntry<Vec<DbRoom>>>>>,
+    chatted_users_cache: Arc<RwLock<HashMap<String, CacheEntry<Vec<String>>>>>,
+    room_last_messages_cache: Arc<RwLock<HashMap<String, i64>>>,
 }
 
 impl Db {
@@ -130,6 +158,10 @@ impl Db {
             api_key,
             database_id,
             bucket_id,
+            users_cache: Arc::new(RwLock::new(None)),
+            rooms_cache: Arc::new(RwLock::new(None)),
+            chatted_users_cache: Arc::new(RwLock::new(HashMap::new())),
+            room_last_messages_cache: Arc::new(RwLock::new(HashMap::new())),
         };
 
         // Spawn a background initializer to setup database and collections if API key exists
@@ -578,7 +610,15 @@ impl Db {
     }
 
     pub fn get_rooms(&self) -> Result<Vec<DbRoom>> {
-        run_appwrite(async {
+        {
+            if let Some(entry) = self.rooms_cache.read().unwrap().as_ref() {
+                if !entry.is_expired() {
+                    return Ok(entry.data.clone());
+                }
+            }
+        }
+
+        let rooms = run_appwrite(async {
             let queries = vec![
                 json!({ "method": "limit", "values": [1000] }).to_string(),
             ];
@@ -592,10 +632,22 @@ impl Db {
             }
             rooms.sort_by(|a, b| a.name.cmp(&b.name));
             Ok(rooms)
-        })
+        })?;
+
+        {
+            let mut cache = self.rooms_cache.write().unwrap();
+            *cache = Some(CacheEntry::new(rooms.clone(), Duration::from_secs(60)));
+        }
+
+        Ok(rooms)
     }
 
+
     pub fn insert_message(&self, msg: &Message) -> Result<()> {
+        {
+            let mut cache = self.room_last_messages_cache.write().unwrap();
+            cache.insert(msg.room_tag.clone(), msg.timestamp);
+        }
         run_appwrite(async {
             self.get_or_create_room(&msg.room_tag)?;
             self.create_document("messages", &msg.id, json!({
@@ -614,6 +666,7 @@ impl Db {
             Ok(())
         })
     }
+
 
     pub fn get_messages(&self, room_tag: &str, limit: usize) -> Result<Vec<Message>> {
         run_appwrite(async {
@@ -748,7 +801,7 @@ impl Db {
     }
 
     pub fn create_user(&self, tag: &str, name: &str, avatar: &str, password: &str) -> Result<bool> {
-        run_appwrite(async {
+        let created = run_appwrite(async {
             if self.get_document("users", tag).await.map_err(map_err)?.is_some() {
                 return Ok(false);
             }
@@ -760,7 +813,14 @@ impl Db {
                 "password_hash": password_hash,
             })).await.map_err(map_err)?;
             Ok(true)
-        })
+        })?;
+
+        if created {
+            let mut cache = self.users_cache.write().unwrap();
+            *cache = None;
+        }
+
+        Ok(created)
     }
 
     pub fn authenticate_user(&self, tag: &str, password: &str) -> Result<Option<DbUser>> {
@@ -784,7 +844,15 @@ impl Db {
     }
 
     pub fn get_all_users(&self) -> Result<Vec<DbUser>> {
-        run_appwrite(async {
+        {
+            if let Some(entry) = self.users_cache.read().unwrap().as_ref() {
+                if !entry.is_expired() {
+                    return Ok(entry.data.clone());
+                }
+            }
+        }
+
+        let users = run_appwrite(async {
             let queries = vec![
                 json!({ "method": "limit", "values": [1000] }).to_string(),
             ];
@@ -798,10 +866,23 @@ impl Db {
                 });
             }
             Ok(users)
-        })
+        })?;
+
+        {
+            let mut cache = self.users_cache.write().unwrap();
+            *cache = Some(CacheEntry::new(users.clone(), Duration::from_secs(30)));
+        }
+
+        Ok(users)
     }
 
+
     pub fn insert_direct_message(&self, msg: &DirectMessage) -> Result<()> {
+        {
+            let mut cache = self.chatted_users_cache.write().unwrap();
+            cache.remove(&msg.sender_tag);
+            cache.remove(&msg.receiver_tag);
+        }
         run_appwrite(async {
             self.create_document("direct_messages", &msg.id, json!({
                 "id": msg.id,
@@ -818,6 +899,7 @@ impl Db {
             Ok(())
         })
     }
+
 
     pub fn get_direct_messages(&self, user1: &str, user2: &str, limit: usize) -> Result<Vec<DirectMessage>> {
         run_appwrite(async {
@@ -924,7 +1006,7 @@ impl Db {
     }
 
     pub fn create_room(&self, name: &str, creator_tag: &str) -> Result<bool> {
-        run_appwrite(async {
+        let created = run_appwrite(async {
             if self.get_document("rooms", name).await.map_err(map_err)?.is_some() {
                 return Ok(false);
             }
@@ -933,11 +1015,18 @@ impl Db {
                 "creator_tag": creator_tag
             })).await.map_err(map_err)?;
             Ok(true)
-        })
+        })?;
+
+        if created {
+            let mut cache = self.rooms_cache.write().unwrap();
+            *cache = None;
+        }
+
+        Ok(created)
     }
 
     pub fn update_room(&self, old_name: &str, new_name: &str, user_tag: &str) -> Result<bool> {
-        run_appwrite(async {
+        let updated = run_appwrite(async {
             let doc = match self.get_document("rooms", old_name).await.map_err(map_err)? {
                 Some(d) => d,
                 None => return Ok(false),
@@ -955,11 +1044,18 @@ impl Db {
             })).await.map_err(map_err)?;
 
             Ok(true)
-        })
+        })?;
+
+        if updated {
+            let mut cache = self.rooms_cache.write().unwrap();
+            *cache = None;
+        }
+
+        Ok(updated)
     }
 
     pub fn delete_room(&self, name: &str, user_tag: &str) -> Result<bool> {
-        run_appwrite(async {
+        let deleted = run_appwrite(async {
             let doc = match self.get_document("rooms", name).await.map_err(map_err)? {
                 Some(d) => d,
                 None => return Ok(false),
@@ -972,8 +1068,16 @@ impl Db {
 
             self.delete_document("rooms", name).await.map_err(map_err)?;
             Ok(true)
-        })
+        })?;
+
+        if deleted {
+            let mut cache = self.rooms_cache.write().unwrap();
+            *cache = None;
+        }
+
+        Ok(deleted)
     }
+
 
     pub fn delete_status(&self, status_id: &str, creator_tag: &str) -> Result<bool> {
         run_appwrite(async {
@@ -1055,20 +1159,34 @@ impl Db {
     }
 
     pub fn get_chatted_user_tags(&self, user_tag: &str) -> Result<Vec<String>> {
-        run_appwrite(async {
+        {
+            if let Some(entry) = self.chatted_users_cache.read().unwrap().get(user_tag) {
+                if !entry.is_expired() {
+                    return Ok(entry.data.clone());
+                }
+            }
+        }
+
+        let tags = run_appwrite(async {
             let q1 = vec![
                 json!({ "method": "equal", "attribute": "sender_tag", "values": [user_tag] }).to_string(),
                 json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
                 json!({ "method": "limit", "values": [100] }).to_string(),
             ];
-            let docs1 = self.list_documents("direct_messages", &q1).await.map_err(map_err)?;
 
             let q2 = vec![
                 json!({ "method": "equal", "attribute": "receiver_tag", "values": [user_tag] }).to_string(),
                 json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
                 json!({ "method": "limit", "values": [100] }).to_string(),
             ];
-            let docs2 = self.list_documents("direct_messages", &q2).await.map_err(map_err)?;
+
+            let (docs1_res, docs2_res) = tokio::join!(
+                self.list_documents("direct_messages", &q1),
+                self.list_documents("direct_messages", &q2)
+            );
+
+            let docs1 = docs1_res.map_err(map_err)?;
+            let docs2 = docs2_res.map_err(map_err)?;
 
             let mut set = std::collections::HashSet::new();
             for d in docs1.into_iter().chain(docs2.into_iter()) {
@@ -1081,26 +1199,39 @@ impl Db {
                     set.insert(receiver.to_string());
                 }
             }
-            Ok(set.into_iter().collect())
-        })
+            Ok(set.into_iter().collect::<Vec<String>>())
+        })?;
+
+        {
+            let mut cache = self.chatted_users_cache.write().unwrap();
+            cache.insert(user_tag.to_string(), CacheEntry::new(tags.clone(), Duration::from_secs(10)));
+        }
+
+        Ok(tags)
     }
+
 
     pub fn get_chat_summary(&self, user_tag: &str) -> Result<serde_json::Value> {
         run_appwrite(async {
-            // 1. Get last message and unread count for direct messages
+            // 1. Get last message and unread count for direct messages concurrently
             let q1 = vec![
                 json!({ "method": "equal", "attribute": "sender_tag", "values": [user_tag] }).to_string(),
                 json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
                 json!({ "method": "limit", "values": [100] }).to_string(),
             ];
-            let docs1 = self.list_documents("direct_messages", &q1).await.unwrap_or_default();
-
             let q2 = vec![
                 json!({ "method": "equal", "attribute": "receiver_tag", "values": [user_tag] }).to_string(),
                 json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
                 json!({ "method": "limit", "values": [100] }).to_string(),
             ];
-            let docs2 = self.list_documents("direct_messages", &q2).await.unwrap_or_default();
+
+            let (docs1_res, docs2_res) = tokio::join!(
+                self.list_documents("direct_messages", &q1),
+                self.list_documents("direct_messages", &q2)
+            );
+
+            let docs1 = docs1_res.unwrap_or_default();
+            let docs2 = docs2_res.unwrap_or_default();
 
             let mut direct_last_message = std::collections::HashMap::new();
             let mut direct_unread = std::collections::HashMap::new();
@@ -1128,19 +1259,80 @@ impl Db {
                 }
             }
 
-            // 2. Get last message timestamp for rooms
+            // 2. Get last message timestamp for rooms using our cache
             let rooms = self.get_rooms().unwrap_or_default();
             let mut room_last_message = std::collections::HashMap::new();
-            for room in rooms {
-                let q_room = vec![
-                    json!({ "method": "equal", "attribute": "room_tag", "values": [room.name] }).to_string(),
+
+            let mut cached_map = self.room_last_messages_cache.read().unwrap().clone();
+            let mut missing_rooms = Vec::new();
+
+            for room in &rooms {
+                if let Some(&ts) = cached_map.get(&room.name) {
+                    room_last_message.insert(room.name.clone(), ts);
+                } else {
+                    missing_rooms.push(room.name.clone());
+                }
+            }
+
+            // If there are missing rooms, run a bulk recent message query first
+            if !missing_rooms.is_empty() {
+                let q_bulk = vec![
                     json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
-                    json!({ "method": "limit", "values": [1] }).to_string(),
+                    json!({ "method": "limit", "values": [300] }).to_string(),
                 ];
-                if let Ok(docs) = self.list_documents("messages", &q_room).await {
-                    if let Some(d) = docs.first() {
+                if let Ok(recent_docs) = self.list_documents("messages", &q_bulk).await {
+                    let mut temp_map = std::collections::HashMap::new();
+                    for d in recent_docs {
+                        let room_tag = d["room_tag"].as_str().unwrap_or("").to_string();
                         let timestamp = d["timestamp"].as_i64().unwrap_or(0);
-                        room_last_message.insert(room.name, timestamp);
+                        let entry = temp_map.entry(room_tag).or_insert(0);
+                        if timestamp > *entry {
+                            *entry = timestamp;
+                        }
+                    }
+
+                    // Write back to cache
+                    let mut cache_write = self.room_last_messages_cache.write().unwrap();
+                    for (room_name, ts) in temp_map {
+                        cache_write.insert(room_name.clone(), ts);
+                        cached_map.insert(room_name, ts);
+                    }
+                }
+
+                // Re-evaluate missing rooms
+                let mut still_missing = Vec::new();
+                for room in &rooms {
+                    if let Some(&ts) = cached_map.get(&room.name) {
+                        room_last_message.insert(room.name.clone(), ts);
+                    } else {
+                        still_missing.push(room.name.clone());
+                    }
+                }
+
+                // Query any still missing rooms concurrently
+                if !still_missing.is_empty() {
+                    let mut futures = Vec::new();
+                    for r_name in still_missing {
+                        let db_clone = self.clone();
+                        futures.push(async move {
+                            let q = vec![
+                                json!({ "method": "equal", "attribute": "room_tag", "values": [&r_name] }).to_string(),
+                                json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
+                                json!({ "method": "limit", "values": [1] }).to_string(),
+                            ];
+                            let ts = match db_clone.list_documents("messages", &q).await {
+                                Ok(docs) => docs.first().and_then(|d| d["timestamp"].as_i64()).unwrap_or(0),
+                                Err(_) => 0,
+                            };
+                            (r_name, ts)
+                        });
+                    }
+
+                    let results = futures::future::join_all(futures).await;
+                    let mut cache_write = self.room_last_messages_cache.write().unwrap();
+                    for (r_name, ts) in results {
+                        cache_write.insert(r_name.clone(), ts);
+                        room_last_message.insert(r_name, ts);
                     }
                 }
             }
@@ -1152,6 +1344,7 @@ impl Db {
             }))
         })
     }
+
 
     pub fn upload_file(&self, bytes: &[u8], filename: &str) -> Result<String> {
         let url = format!("{}/storage/buckets/{}/files", self.endpoint, self.bucket_id);
