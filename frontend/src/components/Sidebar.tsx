@@ -18,9 +18,12 @@ import {
   LayoutGrid,
   ShieldAlert,
   GripVertical,
-  Globe
+  Globe,
+  Mail,
+  Lock,
+  Key
 } from 'lucide-react';
-import type { User, UserStatus, Room, StatusPermission } from '../types';
+import type { User, UserStatus, Room, StatusPermission, RoomInvitation } from '../types';
 import { socket, BACKEND_URL } from '../socket';
 
 interface SidebarProps {
@@ -178,6 +181,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [newTag, setNewTag] = useState('');
   const [showAddTag, setShowAddTag] = useState(false);
+  const [showJoinByCode, setShowJoinByCode] = useState(false);
   const [newSpaceName, setNewSpaceName] = useState('');
 
   // Space selected inside Chats tab vs Groups tab
@@ -187,6 +191,75 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Drag & drop sorting state for pins
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+
+  // Group invitations and invite codes
+  const [invitations, setInvitations] = useState<RoomInvitation[]>([]);
+  const [inviteCodeInput, setInviteCodeInput] = useState('');
+
+  const fetchInvitations = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/users/${currentUser.tag}/invitations`);
+      if (res.ok) {
+        const data = await res.json();
+        setInvitations(data);
+      }
+    } catch (e) {
+      console.error("Error fetching invitations:", e);
+    }
+  };
+
+  useEffect(() => {
+    fetchInvitations();
+    const interval = setInterval(fetchInvitations, 10000);
+    return () => clearInterval(interval);
+  }, [currentUser.tag]);
+
+  const handleInvitation = async (inviteId: string, accept: boolean) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/invitations/${inviteId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accept, user_tag: currentUser.tag }),
+      });
+      if (res.ok) {
+        fetchInvitations();
+        fetchRooms();
+        showAlert(
+          accept ? 'Joined Group!' : 'Declined invitation',
+          accept ? 'You have successfully joined the group.' : 'You have declined the group invitation.'
+        );
+      } else {
+        showAlert('Error', 'Failed to handle invitation.');
+      }
+    } catch (e) {
+      console.error(e);
+      showAlert('Error', 'Failed to connect to backend.');
+    }
+  };
+
+  const handleJoinByCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteCodeInput.trim()) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/rooms/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invite_code: inviteCodeInput.trim(), user_tag: currentUser.tag }),
+      });
+      if (res.ok) {
+        const room = await res.json();
+        setInviteCodeInput('');
+        fetchRooms();
+        setActiveTag(room.name);
+        showAlert('Success', `Successfully joined group #${room.name}`);
+      } else {
+        showAlert('Error', 'Invalid invite code or group not found.');
+      }
+    } catch (e) {
+      console.error(e);
+      showAlert('Error', 'Failed to join group.');
+    }
+  };
 
   // Assign to Space modal
   const [assignTarget, setAssignTarget] = useState<{ type: 'dm' | 'group'; tag: string; name: string } | null>(null);
@@ -1098,7 +1171,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
             </div>
 
-            {/* Create tag */}
+            {/* Create / Join Actions */}
             <div style={{ padding: '4px 16px 12px 16px' }}>
               {showAddTag ? (
                 <form onSubmit={handleCreateTag} style={{ display: 'flex', gap: '8px' }}>
@@ -1123,13 +1196,97 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     Cancel
                   </button>
                 </form>
+              ) : showJoinByCode ? (
+                <form onSubmit={(e) => { handleJoinByCode(e); setShowJoinByCode(false); }} style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    placeholder="Enter invite code..."
+                    className="form-input"
+                    style={{ flex: 1, height: '38px', fontSize: '0.82rem', padding: '0 10px' }}
+                    value={inviteCodeInput}
+                    onChange={(e) => setInviteCodeInput(e.target.value)}
+                    autoFocus
+                  />
+                  <button type="submit" className="btn-primary" style={{ width: 'auto', height: '38px', padding: '0 12px', fontSize: '0.82rem', whiteSpace: 'nowrap' }}>
+                    Join
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    style={{ padding: '0 12px', width: 'auto', height: '38px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', color: 'var(--text-main)', boxShadow: 'none' }}
+                    onClick={() => setShowJoinByCode(false)}
+                  >
+                    Cancel
+                  </button>
+                </form>
               ) : (
-                <button className="create-tag-btn" style={{ height: '38px', width: '100%' }} onClick={() => setShowAddTag(true)}>
-                  <Plus size={18} />
-                  Create New Group Tag
-                </button>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button
+                    className="create-tag-btn"
+                    style={{ height: '38px', flex: 1, fontSize: '0.8rem', padding: '0 8px', borderRadius: '10px' }}
+                    onClick={() => {
+                      setShowAddTag(true);
+                      setShowJoinByCode(false);
+                    }}
+                  >
+                    <Plus size={14} /> Create Tag
+                  </button>
+                  <button
+                    className="create-tag-btn"
+                    style={{
+                      height: '38px',
+                      flex: 1,
+                      fontSize: '0.8rem',
+                      padding: '0 8px',
+                      borderRadius: '10px',
+                      color: 'var(--text-main)',
+                      background: 'rgba(255, 255, 255, 0.03)',
+                      border: '1px dashed var(--border-color)'
+                    }}
+                    onClick={() => {
+                      setShowJoinByCode(true);
+                      setShowAddTag(false);
+                    }}
+                  >
+                    <Key size={14} /> Join by Code
+                  </button>
+                </div>
               )}
             </div>
+
+            {/* Pending Invitations */}
+            {invitations.length > 0 && (
+              <div style={{ padding: '0 16px 12px 16px' }}>
+                <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--accent-purple)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Mail size={12} /> Pending Invitations ({invitations.length})
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {invitations.map(inv => (
+                    <div key={inv.id} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-main)' }}>
+                        Invited to <strong style={{ color: 'var(--accent-purple)' }}>#{inv.room_tag}</strong> by @{inv.sender_tag}
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button 
+                          onClick={() => handleInvitation(inv.id, true)} 
+                          className="btn-primary" 
+                          style={{ flex: 1, height: '28px', fontSize: '0.75rem', padding: 0 }}
+                        >
+                          Accept
+                        </button>
+                        <button 
+                          onClick={() => handleInvitation(inv.id, false)} 
+                          className="btn-primary" 
+                          style={{ flex: 1, height: '28px', fontSize: '0.75rem', padding: 0, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', color: 'var(--text-main)', boxShadow: 'none' }}
+                        >
+                          Decline
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Groups Scrollable Feed */}
             <div className="sidebar-scrollable-feed" style={{ flex: 1, overflowY: 'auto', padding: '0 8px' }}>
@@ -1191,6 +1348,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                 <span className="tag-title" style={{ fontWeight: 600, color: 'var(--text-main)', fontSize: '0.92rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                   {cleanRoomName(room.name)}
                                 </span>
+                                {room.visibility === 'private' && (
+                                  <span title="Private" style={{ display: 'inline-flex', alignItems: 'center' }}><Lock size={12} style={{ marginLeft: '6px', color: 'var(--accent-orange)' }} /></span>
+                                )}
+                                {room.visibility === 'invite_only' && (
+                                  <span title="Invite Only" style={{ display: 'inline-flex', alignItems: 'center' }}><Mail size={12} style={{ marginLeft: '6px', color: 'var(--accent-purple)' }} /></span>
+                                )}
+                                {(!room.visibility || room.visibility === 'public') && (
+                                  <span title="Public" style={{ display: 'inline-flex', alignItems: 'center' }}><Globe size={12} style={{ marginLeft: '6px', color: 'var(--accent-cyan)' }} /></span>
+                                )}
                                 {renderMultiSpaceBadge(id)}
                               </div>
                               <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
@@ -1251,6 +1417,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                               <span className="tag-title" style={{ fontWeight: 600, color: 'var(--text-main)', fontSize: '0.92rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 {cleanRoomName(room.name)}
                               </span>
+                              {room.visibility === 'private' && (
+                                <span title="Private" style={{ display: 'inline-flex', alignItems: 'center' }}><Lock size={12} style={{ marginLeft: '6px', color: 'var(--accent-orange)' }} /></span>
+                              )}
+                              {room.visibility === 'invite_only' && (
+                                <span title="Invite Only" style={{ display: 'inline-flex', alignItems: 'center' }}><Mail size={12} style={{ marginLeft: '6px', color: 'var(--accent-purple)' }} /></span>
+                              )}
+                              {(!room.visibility || room.visibility === 'public') && (
+                                <span title="Public" style={{ display: 'inline-flex', alignItems: 'center' }}><Globe size={12} style={{ marginLeft: '6px', color: 'var(--accent-cyan)' }} /></span>
+                              )}
                               {renderMultiSpaceBadge(id)}
                               {activeGroupSpace === 'main_wall' && renderCountdown(id, lastMsgTime)}
                             </div>

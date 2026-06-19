@@ -407,6 +407,23 @@ body {
   font-size: 0.95rem;
 }
 
+/* Message hover pin controls and highlights */
+.message-row:hover .message-actions {
+  opacity: 1 !important;
+}
+.hover-action-btn:hover {
+  background: rgba(255, 255, 255, 0.15) !important;
+  color: var(--accent-cyan) !important;
+  transform: scale(1.1);
+}
+@keyframes highlight-fade {
+  0% { background-color: rgba(0, 168, 204, 0.35); filter: brightness(1.2); }
+  100% { background-color: transparent; }
+}
+.message-highlight .message-bubble {
+  animation: highlight-fade 2.2s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
 /* Chat Pane */
 .chat-pane {
   flex: 1;

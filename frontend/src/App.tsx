@@ -755,6 +755,14 @@ function App() {
       }
     });
 
+    socket.on('message_pinned', (pinnedMsg: Message) => {
+      setMessages((prev) => prev.map(m => m.id === pinnedMsg.id ? pinnedMsg : m));
+    });
+
+    socket.on('message_unpinned', (data: { message_id: string; room_tag: string }) => {
+      setMessages((prev) => prev.map(m => m.id === data.message_id ? { ...m, pinned: false, pinned_by: undefined, pinned_at: undefined } : m));
+    });
+
     // C. Direct Chats Handlers
     socket.on('direct_history', (history: DirectMessage[]) => {
       setDirectMessages(history);
@@ -1281,6 +1289,10 @@ function App() {
           directMessages={directMessages}
           onBackToSidebar={() => { setActiveTag(null); setActiveDirectUser(null); }}
           onStartCall={initiateCall}
+          rooms={rooms}
+          fetchRooms={fetchTags}
+          allUsers={allUsers}
+          showAlert={showAlert}
         />
       ) : (
         <div className="chat-pane">

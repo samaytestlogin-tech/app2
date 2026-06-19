@@ -19,6 +19,9 @@ pub struct Message {
     pub file_size: Option<i64>,
     pub timestamp: i64,
     pub status: String, // "sent" | "delivered" | "seen"
+    pub pinned: Option<bool>,
+    pub pinned_by: Option<String>,
+    pub pinned_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -58,7 +61,29 @@ pub struct DirectMessage {
 pub struct DbRoom {
     pub name: String,
     pub creator_tag: Option<String>,
+    pub visibility: Option<String>,
+    pub invite_code: Option<String>,
+    pub banned_words: Option<String>,
+    pub description: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DbRoomMember {
+    pub room_tag: String,
+    pub user_tag: String,
+    pub role: String, // "admin" | "co_admin" | "moderator" | "member"
+    pub custom_title: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DbRoomInvitation {
+    pub id: String,
+    pub room_tag: String,
+    pub sender_tag: String,
+    pub receiver_tag: String,
+    pub status: String, // "pending" | "accepted" | "declined"
+}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StatusPermissionItem {
@@ -252,6 +277,23 @@ impl Db {
             ("rooms", "rooms", vec![
                 ("name", "string", 255),
                 ("creator_tag", "string", 255),
+                ("visibility", "string", 50),
+                ("invite_code", "string", 50),
+                ("banned_words", "string", 1000),
+                ("description", "string", 1000),
+            ]),
+            ("room_members", "room_members", vec![
+                ("room_tag", "string", 255),
+                ("user_tag", "string", 255),
+                ("role", "string", 50),
+                ("custom_title", "string", 255),
+            ]),
+            ("room_invitations", "room_invitations", vec![
+                ("id", "string", 255),
+                ("room_tag", "string", 255),
+                ("sender_tag", "string", 255),
+                ("receiver_tag", "string", 255),
+                ("status", "string", 50),
             ]),
             ("messages", "messages", vec![
                 ("id", "string", 255),
@@ -265,6 +307,9 @@ impl Db {
                 ("file_size", "integer", 0),
                 ("timestamp", "integer", 0),
                 ("status", "string", 50),
+                ("pinned", "boolean", 0),
+                ("pinned_by", "string", 255),
+                ("pinned_at", "integer", 0),
             ]),
             ("direct_messages", "direct_messages", vec![
                 ("id", "string", 255),
@@ -294,6 +339,7 @@ impl Db {
                 ("allowed", "boolean", 0),
             ]),
         ];
+
 
         for (col_id, col_name, attributes) in collections {
             // Create collection
@@ -360,6 +406,14 @@ impl Db {
             Some(vec!["ASC", "DESC"])
         ).await;
 
+        let _ = self.create_index(
+            "messages",
+            "room_tag_pinned_idx",
+            "key",
+            vec!["room_tag", "pinned"],
+            None
+        ).await;
+
         // Collection: direct_messages
         let _ = self.create_index(
             "direct_messages",
@@ -410,8 +464,27 @@ impl Db {
             None
         ).await;
 
+        // Collection: room_members
+        let _ = self.create_index(
+            "room_members",
+            "room_tag_user_tag_idx",
+            "key",
+            vec!["room_tag", "user_tag"],
+            Some(vec!["ASC", "ASC"])
+        ).await;
+
+        // Collection: room_invitations
+        let _ = self.create_index(
+            "room_invitations",
+            "receiver_tag_status_idx",
+            "key",
+            vec!["receiver_tag", "status"],
+            Some(vec!["ASC", "ASC"])
+        ).await;
+
         Ok(())
     }
+
 
     async fn create_index(&self, collection: &str, key: &str, index_type: &str, attributes: Vec<&str>, orders: Option<Vec<&str>>) -> Result<()> {
         let url = format!("{}/databases/{}/collections/{}/indexes", self.endpoint, self.database_id, collection);
@@ -599,9 +672,14 @@ impl Db {
             match self.get_document("rooms", name).await.map_err(map_err)? {
                 Some(_) => Ok(()),
                 None => {
+                    let invite_code = uuid::Uuid::new_v4().to_string();
                     self.create_document("rooms", name, json!({
                         "name": name,
-                        "creator_tag": null
+                        "creator_tag": null,
+                        "visibility": "public",
+                        "invite_code": invite_code,
+                        "banned_words": "",
+                        "description": ""
                     })).await.map_err(map_err)?;
                     Ok(())
                 }
@@ -625,9 +703,26 @@ impl Db {
             let docs = self.list_documents("rooms", &queries).await.map_err(map_err)?;
             let mut rooms = Vec::new();
             for d in docs {
+                let name = d["name"].as_str().unwrap_or("").to_string();
+                let creator_tag = d["creator_tag"].as_str().map(|s| s.to_string());
+                let visibility = d["visibility"].as_str().map(|s| s.to_string());
+                let mut invite_code = d["invite_code"].as_str().map(|s| s.to_string());
+                let banned_words = d["banned_words"].as_str().map(|s| s.to_string());
+                let description = d["description"].as_str().map(|s| s.to_string());
+
+                if invite_code.is_none() || invite_code.as_deref() == Some("") || invite_code.as_deref() == Some("N/A") {
+                    let new_code = uuid::Uuid::new_v4().to_string();
+                    let _ = self.update_document("rooms", &name, json!({ "invite_code": new_code })).await;
+                    invite_code = Some(new_code);
+                }
+
                 rooms.push(DbRoom {
-                    name: d["name"].as_str().unwrap_or("").to_string(),
-                    creator_tag: d["creator_tag"].as_str().map(|s| s.to_string()),
+                    name,
+                    creator_tag,
+                    visibility,
+                    invite_code,
+                    banned_words,
+                    description,
                 });
             }
             rooms.sort_by(|a, b| a.name.cmp(&b.name));
@@ -643,30 +738,69 @@ impl Db {
     }
 
 
-    pub fn insert_message(&self, msg: &Message) -> Result<()> {
+
+    pub fn insert_message(&self, msg: &Message) -> Result<Message> {
+        let mut clean_msg = msg.clone();
+        
         {
             let mut cache = self.room_last_messages_cache.write().unwrap();
             cache.insert(msg.room_tag.clone(), msg.timestamp);
         }
+        
         run_appwrite(async {
             self.get_or_create_room(&msg.room_tag)?;
-            self.create_document("messages", &msg.id, json!({
-                "id": msg.id,
-                "room_tag": msg.room_tag,
-                "sender_id": msg.sender_id,
-                "sender_name": msg.sender_name,
-                "msg_type": msg.msg_type,
-                "content": msg.content,
-                "file_url": msg.file_url,
-                "file_name": msg.file_name,
-                "file_size": msg.file_size,
-                "timestamp": msg.timestamp,
-                "status": msg.status,
+            
+            // Check banned words
+            if clean_msg.msg_type == "text" {
+                if let Some(room_doc) = self.get_document("rooms", &msg.room_tag).await.map_err(map_err)? {
+                    if let Some(banned_str) = room_doc["banned_words"].as_str() {
+                        let words: Vec<&str> = banned_str.split(',')
+                            .map(|w| w.trim())
+                            .filter(|w| !w.is_empty())
+                            .collect();
+                            
+                        if !words.is_empty() {
+                            let mut content = clean_msg.content.clone();
+                            for word in words {
+                                let word_lower = word.to_lowercase();
+                                let mut i = 0;
+                                while i < content.len() {
+                                    if content[i..].to_lowercase().starts_with(&word_lower) {
+                                        let len = word.len();
+                                        content.replace_range(i..i+len, &"*".repeat(len));
+                                        i += len;
+                                    } else {
+                                        i += 1;
+                                    }
+                                }
+                            }
+                            clean_msg.content = content;
+                        }
+                    }
+                }
+            }
+
+            self.create_document("messages", &clean_msg.id, json!({
+                "id": clean_msg.id,
+                "room_tag": clean_msg.room_tag,
+                "sender_id": clean_msg.sender_id,
+                "sender_name": clean_msg.sender_name,
+                "msg_type": clean_msg.msg_type,
+                "content": clean_msg.content,
+                "file_url": clean_msg.file_url,
+                "file_name": clean_msg.file_name,
+                "file_size": clean_msg.file_size,
+                "timestamp": clean_msg.timestamp,
+                "status": clean_msg.status,
+                "pinned": clean_msg.pinned.unwrap_or(false),
+                "pinned_by": clean_msg.pinned_by.as_deref().unwrap_or(""),
+                "pinned_at": clean_msg.pinned_at.unwrap_or(0),
             })).await.map_err(map_err)?;
             Ok(())
-        })
+        })?;
+        
+        Ok(clean_msg)
     }
-
 
     pub fn get_messages(&self, room_tag: &str, limit: usize) -> Result<Vec<Message>> {
         run_appwrite(async {
@@ -690,12 +824,79 @@ impl Db {
                     file_size: d["file_size"].as_i64(),
                     timestamp: d["timestamp"].as_i64().unwrap_or(0),
                     status: d["status"].as_str().unwrap_or("").to_string(),
+                    pinned: d["pinned"].as_bool(),
+                    pinned_by: d["pinned_by"].as_str().map(|s| s.to_string()),
+                    pinned_at: d["pinned_at"].as_i64(),
                 });
             }
             messages.reverse();
             Ok(messages)
         })
     }
+
+    pub fn get_messages_for_user(&self, room_tag: &str, limit: usize, user_tag: &str) -> Result<Vec<Message>> {
+        let is_mem = self.is_room_member(room_tag, user_tag)?;
+        let has_inv = self.has_pending_invitation(room_tag, user_tag)?;
+        
+        let mut is_private = false;
+        run_appwrite(async {
+            if let Some(room) = self.get_document("rooms", room_tag).await.map_err(map_err)? {
+                let vis = room["visibility"].as_str().unwrap_or("public");
+                if vis == "private" || vis == "invite_only" {
+                    is_private = true;
+                }
+            }
+            Ok(())
+        })?;
+
+        if is_private && !is_mem && !has_inv {
+            return Ok(Vec::new());
+        }
+
+        let limit_to_24h = !is_mem && has_inv;
+        let min_timestamp = if limit_to_24h {
+            chrono::Utc::now().timestamp_millis() - 24 * 60 * 60 * 1000
+        } else {
+            0
+        };
+
+        run_appwrite(async {
+            let mut queries = vec![
+                json!({ "method": "equal", "attribute": "room_tag", "values": [room_tag] }).to_string(),
+                json!({ "method": "orderDesc", "attribute": "timestamp" }).to_string(),
+            ];
+            
+            if limit_to_24h {
+                queries.push(json!({ "method": "greaterThan", "attribute": "timestamp", "values": [min_timestamp] }).to_string());
+            }
+            
+            queries.push(json!({ "method": "limit", "values": [limit] }).to_string());
+            
+            let docs = self.list_documents("messages", &queries).await.map_err(map_err)?;
+            let mut messages = Vec::new();
+            for d in docs {
+                messages.push(Message {
+                    id: d["id"].as_str().unwrap_or("").to_string(),
+                    room_tag: d["room_tag"].as_str().unwrap_or("").to_string(),
+                    sender_id: d["sender_id"].as_str().unwrap_or("").to_string(),
+                    sender_name: d["sender_name"].as_str().unwrap_or("").to_string(),
+                    msg_type: d["msg_type"].as_str().unwrap_or("").to_string(),
+                    content: d["content"].as_str().unwrap_or("").to_string(),
+                    file_url: d["file_url"].as_str().map(|s| s.to_string()),
+                    file_name: d["file_name"].as_str().map(|s| s.to_string()),
+                    file_size: d["file_size"].as_i64(),
+                    timestamp: d["timestamp"].as_i64().unwrap_or(0),
+                    status: d["status"].as_str().unwrap_or("").to_string(),
+                    pinned: d["pinned"].as_bool(),
+                    pinned_by: d["pinned_by"].as_str().map(|s| s.to_string()),
+                    pinned_at: d["pinned_at"].as_i64(),
+                });
+            }
+            messages.reverse();
+            Ok(messages)
+        })
+    }
+
 
     pub fn update_message_status(&self, message_id: &str, status: &str) -> Result<bool> {
         run_appwrite(async {
@@ -738,6 +939,9 @@ impl Db {
                         file_size: d["file_size"].as_i64(),
                         timestamp: d["timestamp"].as_i64().unwrap_or(0),
                         status: status.to_string(),
+                        pinned: d["pinned"].as_bool(),
+                        pinned_by: d["pinned_by"].as_str().map(|s| s.to_string()),
+                        pinned_at: d["pinned_at"].as_i64(),
                     });
                 }
             }
@@ -1010,10 +1214,25 @@ impl Db {
             if self.get_document("rooms", name).await.map_err(map_err)?.is_some() {
                 return Ok(false);
             }
+            let invite_code = uuid::Uuid::new_v4().to_string();
             self.create_document("rooms", name, json!({
                 "name": name,
-                "creator_tag": creator_tag
+                "creator_tag": creator_tag,
+                "visibility": "public",
+                "invite_code": invite_code,
+                "banned_words": "",
+                "description": ""
             })).await.map_err(map_err)?;
+
+            // Automatically add creator to members as admin
+            let member_doc_id = uuid::Uuid::new_v4().to_string();
+            self.create_document("room_members", &member_doc_id, json!({
+                "room_tag": name,
+                "user_tag": creator_tag,
+                "role": "admin",
+                "custom_title": "Owner"
+            })).await.map_err(map_err)?;
+
             Ok(true)
         })?;
 
@@ -1037,11 +1256,40 @@ impl Db {
                 return Ok(false);
             }
 
+            let visibility = doc["visibility"].as_str().unwrap_or("public");
+            let invite_code = doc["invite_code"].as_str().unwrap_or("");
+            let banned_words = doc["banned_words"].as_str().unwrap_or("");
+
             self.delete_document("rooms", old_name).await.map_err(map_err)?;
             self.create_document("rooms", new_name, json!({
                 "name": new_name,
-                "creator_tag": user_tag
+                "creator_tag": user_tag,
+                "visibility": visibility,
+                "invite_code": invite_code,
+                "banned_words": banned_words
             })).await.map_err(map_err)?;
+
+            // Update old members
+            let q = vec![
+                json!({ "method": "equal", "attribute": "room_tag", "values": [old_name] }).to_string(),
+                json!({ "method": "limit", "values": [1000] }).to_string(),
+            ];
+            let docs = self.list_documents("room_members", &q).await.map_err(map_err)?;
+            for d in docs {
+                let doc_id = d["$id"].as_str().unwrap_or("");
+                let u_tag = d["user_tag"].as_str().unwrap_or("");
+                let role = d["role"].as_str().unwrap_or("member");
+                let custom_title = d["custom_title"].as_str().unwrap_or("");
+                self.delete_document("room_members", doc_id).await.map_err(map_err)?;
+                
+                let member_doc_id = uuid::Uuid::new_v4().to_string();
+                self.create_document("room_members", &member_doc_id, json!({
+                    "room_tag": new_name,
+                    "user_tag": u_tag,
+                    "role": role,
+                    "custom_title": custom_title
+                })).await.map_err(map_err)?;
+            }
 
             Ok(true)
         })?;
@@ -1067,6 +1315,18 @@ impl Db {
             }
 
             self.delete_document("rooms", name).await.map_err(map_err)?;
+
+            // Delete members
+            let q = vec![
+                json!({ "method": "equal", "attribute": "room_tag", "values": [name] }).to_string(),
+                json!({ "method": "limit", "values": [1000] }).to_string(),
+            ];
+            let docs = self.list_documents("room_members", &q).await.map_err(map_err)?;
+            for d in docs {
+                let doc_id = d["$id"].as_str().unwrap_or("");
+                self.delete_document("room_members", doc_id).await.map_err(map_err)?;
+            }
+
             Ok(true)
         })?;
 
@@ -1078,6 +1338,431 @@ impl Db {
         Ok(deleted)
     }
 
+    pub fn get_member_role_level(&self, room_tag: &str, user_tag: &str) -> Result<i32> {
+        run_appwrite(async {
+            // First check if the user is the creator of the room
+            let mut is_public = false;
+            if let Some(room) = self.get_document("rooms", room_tag).await.map_err(map_err)? {
+                if room["creator_tag"].as_str() == Some(user_tag) {
+                    return Ok(4); // Admin
+                }
+                if room["visibility"].as_str() == Some("public") {
+                    is_public = true;
+                }
+            }
+            
+            let q = vec![
+                json!({ "method": "equal", "attribute": "room_tag", "values": [room_tag] }).to_string(),
+                json!({ "method": "equal", "attribute": "user_tag", "values": [user_tag] }).to_string(),
+                json!({ "method": "limit", "values": [1] }).to_string(),
+            ];
+            let docs = self.list_documents("room_members", &q).await.map_err(map_err)?;
+            if let Some(d) = docs.first() {
+                let role = d["role"].as_str().unwrap_or("member");
+                match role {
+                    "admin" => Ok(4),
+                    "co_admin" => Ok(3),
+                    "moderator" => Ok(2),
+                    _ => Ok(1),
+                }
+            } else {
+                if is_public {
+                    Ok(1) // Public rooms allow everyone as level 1 (Member)
+                } else {
+                    Ok(0) // Not a member
+                }
+            }
+        })
+    }
+
+    pub fn is_room_member(&self, room_tag: &str, user_tag: &str) -> Result<bool> {
+        let lvl = self.get_member_role_level(room_tag, user_tag)?;
+        Ok(lvl > 0)
+    }
+
+    pub fn has_pending_invitation(&self, room_tag: &str, user_tag: &str) -> Result<bool> {
+        run_appwrite(async {
+            let q = vec![
+                json!({ "method": "equal", "attribute": "room_tag", "values": [room_tag] }).to_string(),
+                json!({ "method": "equal", "attribute": "receiver_tag", "values": [user_tag] }).to_string(),
+                json!({ "method": "equal", "attribute": "status", "values": ["pending"] }).to_string(),
+                json!({ "method": "limit", "values": [1] }).to_string(),
+            ];
+            let docs = self.list_documents("room_invitations", &q).await.map_err(map_err)?;
+            Ok(!docs.is_empty())
+        })
+    }
+
+    pub fn get_room_members(&self, room_tag: &str) -> Result<Vec<DbRoomMember>> {
+        run_appwrite(async {
+            let q = vec![
+                json!({ "method": "equal", "attribute": "room_tag", "values": [room_tag] }).to_string(),
+                json!({ "method": "limit", "values": [1000] }).to_string(),
+            ];
+            let docs = self.list_documents("room_members", &q).await.map_err(map_err)?;
+            let mut members = Vec::new();
+            for d in docs {
+                members.push(DbRoomMember {
+                    room_tag: d["room_tag"].as_str().unwrap_or("").to_string(),
+                    user_tag: d["user_tag"].as_str().unwrap_or("").to_string(),
+                    role: d["role"].as_str().unwrap_or("member").to_string(),
+                    custom_title: d["custom_title"].as_str().map(|s| s.to_string()),
+                });
+            }
+            Ok(members)
+        })
+    }
+
+    pub fn update_room_member_role(&self, room_tag: &str, user_tag: &str, role: &str, custom_title: Option<String>, req_by: &str) -> Result<bool> {
+        let req_lvl = self.get_member_role_level(room_tag, req_by)?;
+        let target_lvl = self.get_member_role_level(room_tag, user_tag)?;
+        
+        if req_lvl <= target_lvl || req_lvl < 2 {
+            return Ok(false);
+        }
+
+        let new_role_lvl = match role {
+            "admin" => 4,
+            "co_admin" => 3,
+            "moderator" => 2,
+            _ => 1,
+        };
+        if req_lvl < new_role_lvl {
+            return Ok(false);
+        }
+
+        run_appwrite(async {
+            let q = vec![
+                json!({ "method": "equal", "attribute": "room_tag", "values": [room_tag] }).to_string(),
+                json!({ "method": "equal", "attribute": "user_tag", "values": [user_tag] }).to_string(),
+                json!({ "method": "limit", "values": [1] }).to_string(),
+            ];
+            let docs = self.list_documents("room_members", &q).await.map_err(map_err)?;
+            if let Some(d) = docs.first() {
+                let doc_id = d["$id"].as_str().unwrap_or("");
+                self.update_document("room_members", doc_id, json!({
+                    "role": role,
+                    "custom_title": custom_title.unwrap_or_default()
+                })).await.map_err(map_err)?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        })
+    }
+
+    pub fn remove_room_member(&self, room_tag: &str, user_tag: &str, req_by: &str) -> Result<bool> {
+        let is_self = user_tag == req_by;
+        if !is_self {
+            let req_lvl = self.get_member_role_level(room_tag, req_by)?;
+            let target_lvl = self.get_member_role_level(room_tag, user_tag)?;
+            
+            if req_lvl <= target_lvl || req_lvl < 2 {
+                return Ok(false);
+            }
+        }
+
+        run_appwrite(async {
+            let q = vec![
+                json!({ "method": "equal", "attribute": "room_tag", "values": [room_tag] }).to_string(),
+                json!({ "method": "equal", "attribute": "user_tag", "values": [user_tag] }).to_string(),
+                json!({ "method": "limit", "values": [1] }).to_string(),
+            ];
+            let docs = self.list_documents("room_members", &q).await.map_err(map_err)?;
+            if let Some(d) = docs.first() {
+                let doc_id = d["$id"].as_str().unwrap_or("");
+                self.delete_document("room_members", doc_id).await.map_err(map_err)?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        })
+    }
+
+    pub fn send_room_invitation(&self, room_tag: &str, sender_tag: &str, receiver_tag: &str) -> Result<DbRoomInvitation> {
+        run_appwrite(async {
+            let is_mem = self.is_room_member(room_tag, receiver_tag)?;
+            if is_mem {
+                return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError("User is already a member".to_string()))));
+            }
+            let has_inv = self.has_pending_invitation(room_tag, receiver_tag)?;
+            if has_inv {
+                return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError("Invitation already pending".to_string()))));
+            }
+
+            let invite_id = uuid::Uuid::new_v4().to_string();
+            let inv = DbRoomInvitation {
+                id: invite_id.clone(),
+                room_tag: room_tag.to_string(),
+                sender_tag: sender_tag.to_string(),
+                receiver_tag: receiver_tag.to_string(),
+                status: "pending".to_string(),
+            };
+
+            self.create_document("room_invitations", &invite_id, json!({
+                "id": invite_id,
+                "room_tag": room_tag,
+                "sender_tag": sender_tag,
+                "receiver_tag": receiver_tag,
+                "status": "pending"
+            })).await.map_err(map_err)?;
+
+            Ok(inv)
+        })
+    }
+
+    pub fn get_room_invitations(&self, user_tag: &str) -> Result<Vec<DbRoomInvitation>> {
+        run_appwrite(async {
+            let q = vec![
+                json!({ "method": "equal", "attribute": "receiver_tag", "values": [user_tag] }).to_string(),
+                json!({ "method": "equal", "attribute": "status", "values": ["pending"] }).to_string(),
+                json!({ "method": "limit", "values": [1000] }).to_string(),
+            ];
+            let docs = self.list_documents("room_invitations", &q).await.map_err(map_err)?;
+            let mut invites = Vec::new();
+            for d in docs {
+                invites.push(DbRoomInvitation {
+                    id: d["id"].as_str().unwrap_or("").to_string(),
+                    room_tag: d["room_tag"].as_str().unwrap_or("").to_string(),
+                    sender_tag: d["sender_tag"].as_str().unwrap_or("").to_string(),
+                    receiver_tag: d["receiver_tag"].as_str().unwrap_or("").to_string(),
+                    status: d["status"].as_str().unwrap_or("pending").to_string(),
+                });
+            }
+            Ok(invites)
+        })
+    }
+
+    pub fn handle_room_invitation(&self, invite_id: &str, accept: bool, user_tag: &str) -> Result<bool> {
+        run_appwrite(async {
+            let doc = match self.get_document("room_invitations", invite_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(false),
+            };
+
+            if doc["receiver_tag"].as_str() != Some(user_tag) {
+                return Ok(false);
+            }
+
+            let room_tag = doc["room_tag"].as_str().unwrap_or("");
+            let status = if accept { "accepted" } else { "declined" };
+
+            self.update_document("room_invitations", invite_id, json!({
+                "status": status
+            })).await.map_err(map_err)?;
+
+            if accept {
+                let is_mem = self.is_room_member(room_tag, user_tag)?;
+                if !is_mem {
+                    let member_doc_id = uuid::Uuid::new_v4().to_string();
+                    self.create_document("room_members", &member_doc_id, json!({
+                        "room_tag": room_tag,
+                        "user_tag": user_tag,
+                        "role": "member",
+                        "custom_title": "Member"
+                    })).await.map_err(map_err)?;
+                }
+            }
+
+            Ok(true)
+        })
+    }
+
+    pub fn join_room_by_invite_code(&self, invite_code: &str, user_tag: &str) -> Result<Option<DbRoom>> {
+        run_appwrite(async {
+            let q = vec![
+                json!({ "method": "equal", "attribute": "invite_code", "values": [invite_code] }).to_string(),
+                json!({ "method": "limit", "values": [1] }).to_string(),
+            ];
+            let docs = self.list_documents("rooms", &q).await.map_err(map_err)?;
+            if let Some(d) = docs.first() {
+                let room_tag = d["name"].as_str().unwrap_or("");
+                let room = DbRoom {
+                    name: room_tag.to_string(),
+                    creator_tag: d["creator_tag"].as_str().map(|s| s.to_string()),
+                    visibility: d["visibility"].as_str().map(|s| s.to_string()),
+                    invite_code: Some(invite_code.to_string()),
+                    banned_words: d["banned_words"].as_str().map(|s| s.to_string()),
+                    description: d["description"].as_str().map(|s| s.to_string()),
+                };
+
+                let is_mem = self.is_room_member(room_tag, user_tag)?;
+                if !is_mem {
+                    let member_doc_id = uuid::Uuid::new_v4().to_string();
+                    self.create_document("room_members", &member_doc_id, json!({
+                        "room_tag": room_tag,
+                        "user_tag": user_tag,
+                        "role": "member",
+                        "custom_title": "Member"
+                    })).await.map_err(map_err)?;
+                }
+
+                Ok(Some(room))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    pub fn update_room_settings(&self, room_tag: &str, visibility: &str, banned_words: &str, description: &str, req_by: &str) -> Result<bool> {
+        let req_lvl = self.get_member_role_level(room_tag, req_by)?;
+        if req_lvl < 3 {
+            return Ok(false);
+        }
+
+        let updated = run_appwrite(async {
+            self.update_document("rooms", room_tag, json!({
+                "visibility": visibility,
+                "banned_words": banned_words,
+                "description": description
+            })).await.map_err(map_err)?;
+            Ok(true)
+        })?;
+
+        if updated {
+            let mut cache = self.rooms_cache.write().unwrap();
+            *cache = None;
+        }
+
+        Ok(updated)
+    }
+
+
+
+    pub fn get_message_by_id(&self, message_id: &str) -> Result<Option<Message>> {
+        run_appwrite(async {
+            let doc = match self.get_document("messages", message_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(None),
+            };
+
+            Ok(Some(Message {
+                id: doc["id"].as_str().unwrap_or("").to_string(),
+                room_tag: doc["room_tag"].as_str().unwrap_or("").to_string(),
+                sender_id: doc["sender_id"].as_str().unwrap_or("").to_string(),
+                sender_name: doc["sender_name"].as_str().unwrap_or("").to_string(),
+                msg_type: doc["msg_type"].as_str().unwrap_or("").to_string(),
+                content: doc["content"].as_str().unwrap_or("").to_string(),
+                file_url: doc["file_url"].as_str().map(|s| s.to_string()),
+                file_name: doc["file_name"].as_str().map(|s| s.to_string()),
+                file_size: doc["file_size"].as_i64(),
+                timestamp: doc["timestamp"].as_i64().unwrap_or(0),
+                status: doc["status"].as_str().unwrap_or("").to_string(),
+                pinned: doc["pinned"].as_bool(),
+                pinned_by: doc["pinned_by"].as_str().map(|s| s.to_string()),
+                pinned_at: doc["pinned_at"].as_i64(),
+            }))
+        })
+    }
+
+    pub fn pin_message(&self, message_id: &str, pinned_by: &str) -> Result<Option<Message>> {
+        run_appwrite(async {
+            let _doc = match self.get_document("messages", message_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(None),
+            };
+
+            let pinned_at = chrono::Utc::now().timestamp_millis();
+            self.update_document("messages", message_id, json!({
+                "pinned": true,
+                "pinned_by": pinned_by,
+                "pinned_at": pinned_at
+            })).await.map_err(map_err)?;
+
+            // Fetch the updated document
+            let updated_doc = match self.get_document("messages", message_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(None),
+            };
+
+            Ok(Some(Message {
+                id: updated_doc["id"].as_str().unwrap_or("").to_string(),
+                room_tag: updated_doc["room_tag"].as_str().unwrap_or("").to_string(),
+                sender_id: updated_doc["sender_id"].as_str().unwrap_or("").to_string(),
+                sender_name: updated_doc["sender_name"].as_str().unwrap_or("").to_string(),
+                msg_type: updated_doc["msg_type"].as_str().unwrap_or("").to_string(),
+                content: updated_doc["content"].as_str().unwrap_or("").to_string(),
+                file_url: updated_doc["file_url"].as_str().map(|s| s.to_string()),
+                file_name: updated_doc["file_name"].as_str().map(|s| s.to_string()),
+                file_size: updated_doc["file_size"].as_i64(),
+                timestamp: updated_doc["timestamp"].as_i64().unwrap_or(0),
+                status: updated_doc["status"].as_str().unwrap_or("").to_string(),
+                pinned: updated_doc["pinned"].as_bool(),
+                pinned_by: updated_doc["pinned_by"].as_str().map(|s| s.to_string()),
+                pinned_at: updated_doc["pinned_at"].as_i64(),
+            }))
+        })
+    }
+
+    pub fn unpin_message(&self, message_id: &str) -> Result<Option<Message>> {
+        run_appwrite(async {
+            let _doc = match self.get_document("messages", message_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(None),
+            };
+
+            self.update_document("messages", message_id, json!({
+                "pinned": false,
+                "pinned_by": "",
+                "pinned_at": 0
+            })).await.map_err(map_err)?;
+
+            // Fetch the updated document
+            let updated_doc = match self.get_document("messages", message_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(None),
+            };
+
+            Ok(Some(Message {
+                id: updated_doc["id"].as_str().unwrap_or("").to_string(),
+                room_tag: updated_doc["room_tag"].as_str().unwrap_or("").to_string(),
+                sender_id: updated_doc["sender_id"].as_str().unwrap_or("").to_string(),
+                sender_name: updated_doc["sender_name"].as_str().unwrap_or("").to_string(),
+                msg_type: updated_doc["msg_type"].as_str().unwrap_or("").to_string(),
+                content: updated_doc["content"].as_str().unwrap_or("").to_string(),
+                file_url: updated_doc["file_url"].as_str().map(|s| s.to_string()),
+                file_name: updated_doc["file_name"].as_str().map(|s| s.to_string()),
+                file_size: updated_doc["file_size"].as_i64(),
+                timestamp: updated_doc["timestamp"].as_i64().unwrap_or(0),
+                status: updated_doc["status"].as_str().unwrap_or("").to_string(),
+                pinned: updated_doc["pinned"].as_bool(),
+                pinned_by: updated_doc["pinned_by"].as_str().map(|s| s.to_string()),
+                pinned_at: updated_doc["pinned_at"].as_i64(),
+            }))
+        })
+    }
+
+    pub fn get_pinned_messages(&self, room_tag: &str) -> Result<Vec<Message>> {
+        run_appwrite(async {
+            let queries = vec![
+                json!({ "method": "equal", "attribute": "room_tag", "values": [room_tag] }).to_string(),
+                json!({ "method": "equal", "attribute": "pinned", "values": [true] }).to_string(),
+                json!({ "method": "orderDesc", "attribute": "pinned_at" }).to_string(),
+                json!({ "method": "limit", "values": [1000] }).to_string(),
+            ];
+            let docs = self.list_documents("messages", &queries).await.map_err(map_err)?;
+            let mut messages = Vec::new();
+            for d in docs {
+                messages.push(Message {
+                    id: d["id"].as_str().unwrap_or("").to_string(),
+                    room_tag: d["room_tag"].as_str().unwrap_or("").to_string(),
+                    sender_id: d["sender_id"].as_str().unwrap_or("").to_string(),
+                    sender_name: d["sender_name"].as_str().unwrap_or("").to_string(),
+                    msg_type: d["msg_type"].as_str().unwrap_or("").to_string(),
+                    content: d["content"].as_str().unwrap_or("").to_string(),
+                    file_url: d["file_url"].as_str().map(|s| s.to_string()),
+                    file_name: d["file_name"].as_str().map(|s| s.to_string()),
+                    file_size: d["file_size"].as_i64(),
+                    timestamp: d["timestamp"].as_i64().unwrap_or(0),
+                    status: d["status"].as_str().unwrap_or("").to_string(),
+                    pinned: d["pinned"].as_bool(),
+                    pinned_by: d["pinned_by"].as_str().map(|s| s.to_string()),
+                    pinned_at: d["pinned_at"].as_i64(),
+                });
+            }
+            Ok(messages)
+        })
+    }
 
     pub fn delete_status(&self, status_id: &str, creator_tag: &str) -> Result<bool> {
         run_appwrite(async {

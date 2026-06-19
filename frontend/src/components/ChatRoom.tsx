@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Send, Paperclip, Mic, X, Check, CheckCheck, 
-  FileText, Download, Play, Pause, Volume2, Phone
+  FileText, Download, Play, Pause, Volume2, Phone,
+  Settings, Users, ShieldAlert,
+  QrCode, UserPlus, Trash2, Pin, PinOff, Search,
+  Share2, Info
 } from 'lucide-react';
-import type { User, Message, DirectMessage } from '../types';
+import type { User, Message, DirectMessage, Room, RoomMember, RoomInvitation } from '../types';
 import { socket, getUploadUrl, BACKEND_URL } from '../socket';
 
 interface ChatRoomProps {
@@ -15,6 +18,9 @@ interface ChatRoomProps {
   onBackToSidebar: () => void;
   onStartCall?: (target: User) => void;
   showAlert?: (title: string, message: string) => Promise<boolean>;
+  rooms: Room[];
+  fetchRooms: () => Promise<void>;
+  allUsers: User[];
 }
 
 const formatMessageDate = (timestamp: number) => {
@@ -86,6 +92,8 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   onBackToSidebar,
   onStartCall,
   showAlert,
+  rooms,
+  fetchRooms,
 }) => {
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -94,7 +102,272 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const [showPermissionAlert, setShowPermissionAlert] = useState(false);
 
+  // Group Features state
+  const [members, setMembers] = useState<RoomMember[]>([]);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+
+  const [roomVisibility, setRoomVisibility] = useState<'public' | 'private' | 'invite_only'>('public');
+  const [bannedWordsInput, setBannedWordsInput] = useState('');
+  const [roomDescriptionInput, setRoomDescriptionInput] = useState('');
+  const [inviteTargetUser, setInviteTargetUser] = useState('');
+
+  // Pinned Messages state
+  const [showPins, setShowPins] = useState(false);
+  const [pinnedMessages, setPinnedMessages] = useState<Message[]>([]);
+  const [pinSearchQuery, setPinSearchQuery] = useState('');
+  const [pinSenderFilter, setPinSenderFilter] = useState('');
+  const [pinTypeFilter, setPinTypeFilter] = useState<'all' | 'text' | 'photo' | 'audio' | 'file'>('all');
+  const [pinSortOrder, setPinSortOrder] = useState<'newest' | 'oldest'>('newest');
+  const [pinDateFilter, setPinDateFilter] = useState('');
+
   const isDirect = activeDirectUser !== null;
+  const activeRoom = rooms.find(r => r.name === activeTag);
+  const userMember = members.find(m => m.user_tag === currentUser.tag);
+
+  const fetchMembers = async () => {
+    if (!activeTag || isDirect) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/rooms/${activeTag}/members`);
+      if (res.ok) {
+        const data = await res.json();
+        setMembers(data);
+      }
+    } catch (e) {
+      console.error("Error fetching members:", e);
+    }
+  };
+
+  useEffect(() => {
+    fetchMembers();
+  }, [activeTag, isDirect]);
+
+  useEffect(() => {
+    if (isDirect || !activeTag) {
+      setPinnedMessages([]);
+      return;
+    }
+
+    const fetchPinned = async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/rooms/${activeTag}/pins`);
+        if (res.ok) {
+          const data = await res.json();
+          setPinnedMessages(data);
+        }
+      } catch (err) {
+        console.error('Failed to fetch pinned messages:', err);
+      }
+    };
+
+    fetchPinned();
+
+    const handleMsgPinned = (pinnedMsg: Message) => {
+      if (pinnedMsg.room_tag === activeTag) {
+        setPinnedMessages((prev) => {
+          if (prev.some((m) => m.id === pinnedMsg.id)) {
+            return prev.map((m) => m.id === pinnedMsg.id ? pinnedMsg : m);
+          }
+          return [pinnedMsg, ...prev];
+        });
+      }
+    };
+
+    const handleMsgUnpinned = (data: { message_id: string; room_tag: string }) => {
+      if (data.room_tag === activeTag) {
+        setPinnedMessages((prev) => prev.filter((m) => m.id !== data.message_id));
+      }
+    };
+
+    socket.on('message_pinned', handleMsgPinned);
+    socket.on('message_unpinned', handleMsgUnpinned);
+
+    return () => {
+      socket.off('message_pinned', handleMsgPinned);
+      socket.off('message_unpinned', handleMsgUnpinned);
+    };
+  }, [activeTag, isDirect]);
+
+  const handleAcceptInvite = async () => {
+    if (!activeTag) return;
+    try {
+      const invRes = await fetch(`${BACKEND_URL}/api/users/${currentUser.tag}/invitations`);
+      if (invRes.ok) {
+        const invites: RoomInvitation[] = await invRes.json();
+        const pendingInv = invites.find(i => i.room_tag === activeTag && i.status === 'pending');
+        if (pendingInv) {
+          const res = await fetch(`${BACKEND_URL}/api/invitations/${pendingInv.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accept: true, user_tag: currentUser.tag }),
+          });
+          if (res.ok) {
+            fetchMembers();
+            fetchRooms();
+            showAlert && showAlert('Joined Group!', 'You have successfully joined the group.');
+          } else {
+            showAlert && showAlert('Error', 'Failed to join group.');
+          }
+        } else {
+          showAlert && showAlert('Preview Mode', 'You must be invited to join this private/invite-only room.');
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const getQRCodeUrl = () => {
+    if (!activeRoom) return '';
+    return `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(`${window.location.origin}/join?code=${activeRoom?.invite_code || ''}`)}`;
+  };
+
+  const handleDownloadQRCode = async () => {
+    const url = getQRCodeUrl();
+    if (!url) return;
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `group_qr_${activeTag}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+      showAlert && showAlert('Downloaded', 'QR Code saved to downloads.');
+    } catch (e) {
+      console.error(e);
+      showAlert && showAlert('Error', 'Failed to download QR code.');
+    }
+  };
+
+  const handleShareQRCode = async () => {
+    const url = getQRCodeUrl();
+    if (!url || !activeRoom) return;
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const file = new File([blob], `group_qr_${activeTag}.png`, { type: 'image/png' });
+      
+      const shareData = {
+        title: `Join our Group #${activeTag}`,
+        text: `Scan this QR Code to join our group #${activeTag}!`,
+        files: [file],
+      };
+
+      if (navigator.canShare && navigator.canShare(shareData)) {
+        await navigator.share(shareData);
+        showAlert && showAlert('Shared', 'QR Code shared successfully.');
+      } else {
+        const link = `${window.location.origin}/join?code=${activeRoom?.invite_code || ''}`;
+        navigator.clipboard.writeText(link);
+        showAlert && showAlert('Copied Link', 'Sharing not supported on this device. Invite link copied to clipboard.');
+      }
+    } catch (e) {
+      console.error('Sharing failed:', e);
+      const link = `${window.location.origin}/join?code=${activeRoom?.invite_code || ''}`;
+      navigator.clipboard.writeText(link);
+      showAlert && showAlert('Copied Link', 'Invite link copied to clipboard.');
+    }
+  };
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeTag) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/rooms/${activeTag}/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          visibility: roomVisibility,
+          banned_words: bannedWordsInput,
+          description: roomDescriptionInput,
+          req_by: currentUser.tag,
+        }),
+      });
+      if (res.ok) {
+        setShowSettingsModal(false);
+        fetchRooms();
+        showAlert && showAlert('Settings Saved', 'Group settings updated successfully.');
+      } else if (res.status === 403) {
+        showAlert && showAlert('Forbidden', 'You do not have permission to update settings.');
+      } else {
+        showAlert && showAlert('Error', 'Failed to update group settings.');
+      }
+    } catch (e) {
+      console.error(e);
+      showAlert && showAlert('Error', 'Failed to connect to backend.');
+    }
+  };
+
+  const handleSendInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeTag || !inviteTargetUser.trim()) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/rooms/${activeTag}/invitations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sender_tag: currentUser.tag,
+          receiver_tag: inviteTargetUser.trim(),
+        }),
+      });
+      if (res.ok) {
+        setInviteTargetUser('');
+        showAlert && showAlert('Invite Sent', `Sent invitation to @${inviteTargetUser}`);
+      } else {
+        showAlert && showAlert('Error', 'Failed to send invite. Check if the user exists or is already invited.');
+      }
+    } catch (e) {
+      console.error(e);
+      showAlert && showAlert('Error', 'Failed to send invite.');
+    }
+  };
+
+  const handleUpdateMemberRole = async (targetUserTag: string, newRole: string) => {
+    if (!activeTag) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/rooms/${activeTag}/members/${targetUserTag}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          role: newRole,
+          custom_title: null,
+          req_by: currentUser.tag,
+        }),
+      });
+      if (res.ok) {
+        fetchMembers();
+        showAlert && showAlert('Role Updated', `Updated role of @${targetUserTag} to ${newRole}`);
+      } else {
+        showAlert && showAlert('Forbidden', 'You do not have permission to modify roles.');
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleRemoveMember = async (targetUserTag: string) => {
+    if (!activeTag) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/rooms/${activeTag}/members/${targetUserTag}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          req_by: currentUser.tag,
+        }),
+      });
+      if (res.ok) {
+        fetchMembers();
+        showAlert && showAlert('Member Removed', `Removed @${targetUserTag} from the group.`);
+      } else {
+        showAlert && showAlert('Forbidden', 'You do not have permission to remove members.');
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
   const activeMessages = isDirect ? directMessages : messages;
 
   useEffect(() => {
@@ -168,6 +441,79 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
       }
     }
   }, [activeMessages.length, activeTag, activeDirectUser?.tag, currentUser.tag, isDirect]);
+
+  const handlePinMessage = (messageId: string) => {
+    if (!activeTag) return;
+    socket.emit('pin_message', {
+      message_id: messageId,
+      room_tag: activeTag,
+      user_id: currentUser.tag,
+    });
+  };
+
+  const handleUnpinMessage = (messageId: string) => {
+    if (!activeTag) return;
+    socket.emit('unpin_message', {
+      message_id: messageId,
+      room_tag: activeTag,
+      user_id: currentUser.tag,
+    });
+  };
+
+  const handleJumpToMessage = (messageId: string) => {
+    const el = document.getElementById(`msg-${messageId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('message-highlight');
+      setTimeout(() => {
+        el.classList.remove('message-highlight');
+      }, 2000);
+    } else {
+      showAlert && showAlert('Message Not Found', 'This message is too old to be in the local feed cache.');
+    }
+  };
+
+  // Get all unique senders from pinned messages to populate a filter dropdown
+  const pinSenders = Array.from(new Set(pinnedMessages.map(m => m.sender_name)));
+
+  // Filter & Sort pinned messages
+  const filteredPins = pinnedMessages
+    .filter(msg => {
+      // 1. Search Query
+      if (pinSearchQuery.trim()) {
+        const query = pinSearchQuery.toLowerCase();
+        const contentMatch = msg.content?.toLowerCase().includes(query);
+        const nameMatch = msg.sender_name?.toLowerCase().includes(query);
+        const fileMatch = msg.file_name?.toLowerCase().includes(query);
+        if (!contentMatch && !nameMatch && !fileMatch) return false;
+      }
+
+      // 2. Sender Filter
+      if (pinSenderFilter && msg.sender_name !== pinSenderFilter) {
+        return false;
+      }
+
+      // 3. Type Filter
+      if (pinTypeFilter !== 'all' && msg.msg_type !== pinTypeFilter) {
+        return false;
+      }
+
+      // 4. Date Filter
+      if (pinDateFilter) {
+        const msgDate = new Date(msg.timestamp).toDateString();
+        const filterDate = new Date(pinDateFilter).toDateString();
+        if (msgDate !== filterDate) return false;
+      }
+
+      return true;
+    })
+    .sort((a, b) => {
+      if (pinSortOrder === 'newest') {
+        return b.timestamp - a.timestamp;
+      } else {
+        return a.timestamp - b.timestamp;
+      }
+    });
 
   // Handle send text message
   const handleSendText = (e: React.FormEvent) => {
@@ -405,7 +751,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
             <div className="chat-header-title">
               {isDirect ? activeDirectUser.username : cleanRoomName(activeTag || '')}
             </div>
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
               {isDirect ? (
                 <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   @{activeDirectUser.tag} •{' '}
@@ -414,11 +760,19 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                   </span>
                 </span>
               ) : (
-                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ color: 'var(--accent-cyan)', fontWeight: 500 }}>#{activeTag?.toLowerCase()}</span>
-                  <span>•</span>
-                  <span>{activeMessages.length} {activeMessages.length === 1 ? 'message' : 'messages'}</span>
-                </span>
+                <>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ color: 'var(--accent-cyan)', fontWeight: 500 }}>#{activeTag?.toLowerCase()}</span>
+                    <span>•</span>
+                    <span>{activeMessages.length} {activeMessages.length === 1 ? 'message' : 'messages'}</span>
+                  </span>
+                  {!isDirect && activeRoom?.description && (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', maxWidth: '350px', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', marginTop: '2px' }} title={activeRoom?.description}>
+                      <Info size={11} style={{ flexShrink: 0, color: 'var(--accent)' }} />
+                      <span>{activeRoom?.description}</span>
+                    </span>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -446,9 +800,94 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
             <Phone size={22} />
           </button>
         )}
+        {!isDirect && activeTag && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <button 
+              className={`call-header-btn ${showPins ? 'active' : ''}`}
+              onClick={() => setShowPins(!showPins)}
+              title="Pinned Messages & Files"
+              style={{
+                background: showPins ? 'rgba(0, 168, 204, 0.15)' : 'none',
+                border: 'none',
+                color: showPins ? 'var(--accent-cyan)' : 'var(--text-muted)',
+                cursor: 'pointer',
+                padding: '10px',
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 0.2s',
+              }}
+            >
+              <Pin size={22} fill={showPins ? "var(--accent-cyan)" : "none"} />
+            </button>
+
+            <button 
+              className="call-header-btn" 
+              onClick={() => {
+                if (activeRoom) {
+                  setRoomVisibility(activeRoom.visibility || 'public');
+                  setBannedWordsInput(activeRoom.banned_words || '');
+                  setRoomDescriptionInput(activeRoom.description || '');
+                }
+                setShowSettingsModal(true);
+              }}
+              title="Group settings & management"
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--accent)',
+                cursor: 'pointer',
+                padding: '10px',
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'background 0.2s',
+                marginRight: '8px'
+              }}
+            >
+              <Settings size={22} />
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Messages Feed */}
+      {/* 24-Hour Preview Mode Banner */}
+      {!isDirect && !userMember && (
+        <div style={{
+          background: 'rgba(230, 74, 25, 0.12)',
+          borderBottom: '1px solid rgba(230, 74, 25, 0.2)',
+          padding: '12px 16px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', width: '100%' }}>
+            <div style={{ fontSize: '0.85rem', color: '#ff7043', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <ShieldAlert size={16} />
+              <span>You are viewing a 24-hour message preview. Join this group to view complete history and participate.</span>
+            </div>
+            <button 
+              onClick={handleAcceptInvite}
+              className="btn-primary" 
+              style={{ width: 'auto', padding: '6px 12px', fontSize: '0.8rem', height: 'auto', background: '#e64a19', border: 'none', whiteSpace: 'nowrap' }}
+            >
+              Join Group
+            </button>
+          </div>
+          {activeRoom?.description && (
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', borderTop: '1px dashed rgba(230, 74, 25, 0.2)', paddingTop: '6px' }}>
+              <strong>About Group:</strong> {activeRoom?.description}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Workspace Row (Messages Feed + Input side-by-side with Pinned Sidebar) */}
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', width: '100%', position: 'relative' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', height: '100%', position: 'relative' }}>
+          {/* Messages Feed */}
       <div className="chat-messages">
         {activeMessages.map((msg, index) => {
           const isOutgoing = isDirect
@@ -479,10 +918,79 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
               
               <div
                 className={`message-row ${isOutgoing ? 'outgoing' : 'incoming'}`}
+                id={`msg-${msg.id}`}
               >
                 {!isOutgoing && !isDirect && <div className="message-sender">{senderName}</div>}
                 
-                <div className="message-bubble">
+                {isOutgoing && !isDirect && (
+                  <div className="message-actions" style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    opacity: 0,
+                    transition: 'opacity 0.2s',
+                    marginRight: '8px',
+                    alignSelf: 'center'
+                  }}>
+                    {(msg as Message).pinned ? (
+                      (userMember?.role === 'admin' || userMember?.role === 'co_admin' || userMember?.role === 'moderator' || (msg as Message).pinned_by === currentUser.tag) && (
+                        <button
+                          onClick={() => handleUnpinMessage(msg.id)}
+                          style={{
+                            background: 'rgba(255,255,255,0.05)',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '50%',
+                            width: '28px',
+                            height: '28px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer',
+                            color: 'var(--text-main)',
+                            transition: 'all 0.2s'
+                          }}
+                          title="Unpin Message"
+                          className="hover-action-btn"
+                        >
+                          <PinOff size={14} />
+                        </button>
+                      )
+                    ) : (
+                      userMember && (
+                        <button
+                          onClick={() => handlePinMessage(msg.id)}
+                          style={{
+                            background: 'rgba(255,255,255,0.05)',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '50%',
+                            width: '28px',
+                            height: '28px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer',
+                            color: 'var(--text-muted)',
+                            transition: 'all 0.2s'
+                          }}
+                          title="Pin Message"
+                          className="hover-action-btn"
+                        >
+                          <Pin size={14} />
+                        </button>
+                      )
+                    )}
+                  </div>
+                )}
+
+                <div className="message-bubble" style={{ position: 'relative' }}>
+                  {/* Pin badge indicator */}
+                  {!isDirect && (msg as Message).pinned && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', color: 'var(--accent-glow)', marginBottom: '4px', opacity: 0.8 }}>
+                      <Pin size={10} fill="var(--accent-glow)" />
+                      <span>Pinned by @{(msg as Message).pinned_by}</span>
+                    </div>
+                  )}
+
                   {/* 1. Text Message */}
                   {msg.msg_type === 'text' && <div>{msg.content}</div>}
 
@@ -536,6 +1044,66 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                     )}
                   </div>
                 </div>
+
+                {!isOutgoing && !isDirect && (
+                  <div className="message-actions" style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    opacity: 0,
+                    transition: 'opacity 0.2s',
+                    marginLeft: '8px',
+                    alignSelf: 'center'
+                  }}>
+                    {(msg as Message).pinned ? (
+                      (userMember?.role === 'admin' || userMember?.role === 'co_admin' || userMember?.role === 'moderator' || (msg as Message).pinned_by === currentUser.tag) && (
+                        <button
+                          onClick={() => handleUnpinMessage(msg.id)}
+                          style={{
+                            background: 'rgba(255,255,255,0.05)',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '50%',
+                            width: '28px',
+                            height: '28px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer',
+                            color: 'var(--text-main)',
+                            transition: 'all 0.2s'
+                          }}
+                          title="Unpin Message"
+                          className="hover-action-btn"
+                        >
+                          <PinOff size={14} />
+                        </button>
+                      )
+                    ) : (
+                      userMember && (
+                        <button
+                          onClick={() => handlePinMessage(msg.id)}
+                          style={{
+                            background: 'rgba(255,255,255,0.05)',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '50%',
+                            width: '28px',
+                            height: '28px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer',
+                            color: 'var(--text-muted)',
+                            transition: 'all 0.2s'
+                          }}
+                          title="Pin Message"
+                          className="hover-action-btn"
+                        >
+                          <Pin size={14} />
+                        </button>
+                      )
+                    )}
+                  </div>
+                )}
               </div>
             </React.Fragment>
           );
@@ -545,62 +1113,460 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
 
       {/* Input Panel */}
       <div className="chat-input-panel">
-        <input
-          type="file"
-          ref={fileInputRef}
-          style={{ display: 'none' }}
-          onChange={handleFileChange}
-        />
-
-        {isRecording ? (
-          /* Voice Recording UI */
-          <div className="recording-bar">
-            <div className="recording-timer">
-              <div className="recording-dot"></div>
-              <span>Recording: {formatTime(recordingTime)}</span>
-            </div>
-            <button className="recording-cancel" onClick={cancelRecording}>
-              Cancel
-            </button>
+        {!isDirect && !userMember ? (
+          <div style={{ textAlign: 'center', padding: '16px 0', color: 'var(--text-muted)', fontSize: '0.9rem', width: '100%' }}>
+            You must be a member to send messages to this group. Click "Join Group" above.
           </div>
         ) : (
-          /* Standard Input Buttons */
-          <div className="chat-input-actions">
-            <button 
-              className="chat-action-btn" 
-              onClick={handleAttachmentClick}
-              disabled={isUploading}
-            >
-              <Paperclip size={20} />
-            </button>
-            <button className="chat-action-btn" onClick={startRecording}>
-              <Mic size={20} />
-            </button>
-          </div>
-        )}
-
-        {/* Input Text Form */}
-        {!isRecording && (
-          <form onSubmit={handleSendText} className="chat-input-wrapper">
+          <>
             <input
-              type="text"
-              placeholder={isUploading ? 'Uploading file...' : 'Type a message...'}
-              className="chat-input"
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              disabled={isUploading}
+              type="file"
+              ref={fileInputRef}
+              style={{ display: 'none' }}
+              onChange={handleFileChange}
             />
-            <button type="submit" className="chat-send-btn" style={{ marginLeft: '12px' }}>
-              <Send size={18} />
-            </button>
-          </form>
-        )}
 
-        {/* Stop Voice note & Send */}
-        {isRecording && (
-          <button className="chat-send-btn" onClick={stopRecording}>
-            <Send size={18} />
-          </button>
+            {isRecording ? (
+              /* Voice Recording UI */
+              <div className="recording-bar">
+                <div className="recording-timer">
+                  <div className="recording-dot"></div>
+                  <span>Recording: {formatTime(recordingTime)}</span>
+                </div>
+                <button className="recording-cancel" onClick={cancelRecording}>
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              /* Standard Input Buttons */
+              <div className="chat-input-actions">
+                <button 
+                  className="chat-action-btn" 
+                  onClick={handleAttachmentClick}
+                  disabled={isUploading}
+                >
+                  <Paperclip size={20} />
+                </button>
+                <button className="chat-action-btn" onClick={startRecording}>
+                  <Mic size={20} />
+                </button>
+              </div>
+            )}
+
+            {/* Input Text Form */}
+            {!isRecording && (
+              <form onSubmit={handleSendText} className="chat-input-wrapper">
+                <input
+                  type="text"
+                  placeholder={isUploading ? 'Uploading file...' : 'Type a message...'}
+                  className="chat-input"
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  disabled={isUploading}
+                />
+                <button type="submit" className="chat-send-btn" style={{ marginLeft: '12px' }}>
+                  <Send size={18} />
+                </button>
+              </form>
+            )}
+
+            {/* Stop Voice note & Send */}
+            {isRecording && (
+              <button className="chat-send-btn" onClick={stopRecording}>
+                <Send size={18} />
+              </button>
+            )}
+          </>
+        )}
+      </div>
+        </div>
+
+        {/* Pinned Messages Sidebar Dashboard */}
+        {showPins && !isDirect && (
+          <div className="pinned-sidebar" style={{
+            width: '380px',
+            borderLeft: '1px solid var(--border-color)',
+            background: 'var(--bg-glass)',
+            backdropFilter: 'blur(20px)',
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100%',
+            animation: 'slideInRight 0.3s ease',
+            zIndex: 10
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: '16px 20px',
+              borderBottom: '1px solid var(--border-color)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600, color: 'var(--accent-cyan)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Pin size={18} fill="var(--accent-cyan)" />
+                  Pinned Messages
+                </h3>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  {filteredPins.length} of {pinnedMessages.length} pinned items
+                </span>
+              </div>
+              <button 
+                onClick={() => setShowPins(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  padding: '4px',
+                  borderRadius: '50%'
+                }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Filters Dashboard */}
+            <div style={{
+              padding: '16px 20px',
+              borderBottom: '1px solid var(--border-color)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
+              background: 'rgba(0,0,0,0.1)'
+            }}>
+              {/* Search */}
+              <div style={{ position: 'relative' }}>
+                <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                <input
+                  type="text"
+                  placeholder="Search pins..."
+                  value={pinSearchQuery}
+                  onChange={(e) => setPinSearchQuery(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px 8px 32px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border-color)',
+                    background: 'rgba(255,255,255,0.03)',
+                    color: 'var(--text-main)',
+                    fontSize: '0.85rem'
+                  }}
+                />
+              </div>
+
+              {/* Multi-row filters */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                {/* Sender Filter */}
+                <div>
+                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Sender</label>
+                  <select
+                    value={pinSenderFilter}
+                    onChange={(e) => setPinSenderFilter(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '6px',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border-color)',
+                      background: 'var(--bg-secondary)',
+                      color: 'var(--text-main)',
+                      fontSize: '0.8rem'
+                    }}
+                  >
+                    <option value="">All Users</option>
+                    {pinSenders.map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Type Filter */}
+                <div>
+                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Content Type</label>
+                  <select
+                    value={pinTypeFilter}
+                    onChange={(e) => setPinTypeFilter(e.target.value as any)}
+                    style={{
+                      width: '100%',
+                      padding: '6px',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border-color)',
+                      background: 'var(--bg-secondary)',
+                      color: 'var(--text-main)',
+                      fontSize: '0.8rem'
+                    }}
+                  >
+                    <option value="all">All Types</option>
+                    <option value="text">Text Messages</option>
+                    <option value="photo">Photos / Images</option>
+                    <option value="audio">Voice Notes</option>
+                    <option value="file">Shared Files</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                {/* Date Filter */}
+                <div>
+                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Date</label>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type="date"
+                      value={pinDateFilter}
+                      onChange={(e) => setPinDateFilter(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '5px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border-color)',
+                        background: 'var(--bg-secondary)',
+                        color: 'var(--text-main)',
+                        fontSize: '0.8rem'
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Sort Order */}
+                <div>
+                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Sort By</label>
+                  <select
+                    value={pinSortOrder}
+                    onChange={(e) => setPinSortOrder(e.target.value as any)}
+                    style={{
+                      width: '100%',
+                      padding: '6px',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border-color)',
+                      background: 'var(--bg-secondary)',
+                      color: 'var(--text-main)',
+                      fontSize: '0.8rem'
+                    }}
+                  >
+                    <option value="newest">Newest Pin</option>
+                    <option value="oldest">Oldest Pin</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Reset Filters Link */}
+              {(pinSearchQuery || pinSenderFilter || pinTypeFilter !== 'all' || pinDateFilter) && (
+                <button
+                  onClick={() => {
+                    setPinSearchQuery('');
+                    setPinSenderFilter('');
+                    setPinTypeFilter('all');
+                    setPinDateFilter('');
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--accent-cyan)',
+                    cursor: 'pointer',
+                    fontSize: '0.75rem',
+                    textAlign: 'left',
+                    padding: 0,
+                    alignSelf: 'flex-start'
+                  }}
+                >
+                  Clear Filters
+                </button>
+              )}
+            </div>
+
+            {/* Pinned Messages List */}
+            <div style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '16px 20px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px'
+            }}>
+              {filteredPins.length === 0 ? (
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  height: '100%',
+                  color: 'var(--text-muted)',
+                  textAlign: 'center',
+                  gap: '8px'
+                }}>
+                  <Pin size={32} style={{ opacity: 0.3 }} />
+                  <div style={{ fontSize: '0.9rem', fontWeight: 500 }}>No Pinned Messages Found</div>
+                  <div style={{ fontSize: '0.75rem' }}>Try adjusting your search criteria or filters.</div>
+                </div>
+              ) : (
+                filteredPins.map((msg) => {
+                  const isUserAllowedToUnpin = 
+                    userMember?.role === 'admin' || 
+                    userMember?.role === 'co_admin' || 
+                    userMember?.role === 'moderator' || 
+                    msg.pinned_by === currentUser.tag;
+
+                  return (
+                    <div 
+                      key={msg.id}
+                      style={{
+                        background: 'rgba(255, 255, 255, 0.02)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '12px',
+                        padding: '14px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '10px',
+                        transition: 'transform 0.2s, background-color 0.2s',
+                        cursor: 'pointer'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.04)';
+                        e.currentTarget.style.transform = 'translateY(-2px)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.02)';
+                        e.currentTarget.style.transform = 'translateY(0)';
+                      }}
+                      onClick={() => handleJumpToMessage(msg.id)}
+                    >
+                      {/* Sender Info & Date */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-main)' }}>
+                            {msg.sender_name}
+                          </div>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                            Pinned by @{msg.pinned_by}
+                          </div>
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          {new Date(msg.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                        </div>
+                      </div>
+
+                      {/* Content Preview */}
+                      <div style={{
+                        fontSize: '0.85rem',
+                        color: 'var(--text-main)',
+                        lineHeight: 1.4,
+                        background: 'rgba(0,0,0,0.15)',
+                        padding: '10px',
+                        borderRadius: '8px',
+                        borderLeft: '3px solid var(--accent-cyan)'
+                      }}>
+                        {msg.msg_type === 'text' && (
+                          <div style={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                        )}
+
+                        {msg.msg_type === 'photo' && msg.file_url && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <img
+                              src={getUploadUrl(msg.file_url)}
+                              alt="pinned attachment"
+                              style={{ width: '100%', maxHeight: '120px', objectFit: 'cover', borderRadius: '4px' }}
+                            />
+                            {msg.content && <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{msg.content}</div>}
+                          </div>
+                        )}
+
+                        {msg.msg_type === 'audio' && msg.file_url && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              🔊 Voice Note preview
+                            </div>
+                            <audio src={getUploadUrl(msg.file_url)} controls style={{ width: '100%', height: '32px' }} onClick={(e) => e.stopPropagation()} />
+                          </div>
+                        )}
+
+                        {msg.msg_type === 'file' && msg.file_url && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <div style={{
+                              background: 'rgba(0, 168, 204, 0.1)',
+                              color: 'var(--accent-cyan)',
+                              padding: '8px',
+                              borderRadius: '6px'
+                            }}>
+                              <FileText size={18} />
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {msg.file_name}
+                              </div>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                {msg.file_size ? `${(msg.file_size / 1024).toFixed(1)} KB` : 'Unknown size'}
+                              </div>
+                            </div>
+                            <a
+                              href={getUploadUrl(msg.file_url)}
+                              download={msg.file_name}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                background: 'rgba(255,255,255,0.05)',
+                                color: 'var(--text-main)',
+                                padding: '6px',
+                                borderRadius: '50%',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center'
+                              }}
+                            >
+                              <Download size={14} />
+                            </a>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Footer Actions */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                        <span 
+                          style={{
+                            fontSize: '0.75rem',
+                            color: 'var(--accent-cyan)',
+                            fontWeight: 500,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}
+                        >
+                          Click to jump
+                        </span>
+                        
+                        {isUserAllowedToUnpin && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleUnpinMessage(msg.id);
+                            }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: 'var(--accent-orange)',
+                              cursor: 'pointer',
+                              fontSize: '0.75rem',
+                              fontWeight: 500,
+                              padding: '4px 8px',
+                              borderRadius: '4px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(230, 74, 25, 0.1)'}
+                            onMouseLeave={(e) => e.currentTarget.style.background = 'none'}
+                          >
+                            <PinOff size={12} />
+                            Unpin
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
         )}
       </div>
 
@@ -675,6 +1641,282 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
           </div>
         </div>
       )}
+      {/* Group Settings & Management Modal */}
+      {showSettingsModal && activeTag && activeRoom && (
+        <div style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.75)',
+          backdropFilter: 'blur(10px)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 998,
+          padding: '24px'
+        }}>
+          <div style={{
+            background: 'var(--bg-glass)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '16px',
+            padding: '24px',
+            maxWidth: '500px',
+            width: '100%',
+            maxHeight: '90vh',
+            overflowY: 'auto',
+            boxShadow: 'var(--shadow-lg)',
+            animation: 'fadeIn 0.3s ease',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '20px'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 600, color: 'var(--accent-purple)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Settings size={20} /> Group Settings: #{activeTag}
+              </h3>
+              <button 
+                onClick={() => setShowSettingsModal(false)}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Section 1: Invite Info (QR / Link / Code) */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <QrCode size={16} /> Invite Code & QR Link
+              </h4>
+              <div style={{ background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
+                {/* Real QR Code */}
+                <div style={{ background: 'white', padding: '10px', borderRadius: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                  <img
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(`${window.location.origin}/join?code=${activeRoom?.invite_code || ''}`)}`}
+                    alt="Invite QR Code"
+                    style={{ width: '120px', height: '120px', display: 'block' }}
+                  />
+                  <span style={{ fontSize: '0.65rem', color: '#1e293b', fontWeight: 700 }}>#{activeTag.toUpperCase()}</span>
+                </div>
+                {/* Download / Share Buttons */}
+                <div style={{ display: 'flex', gap: '8px', width: '140px', justifyContent: 'center' }}>
+                  <button
+                    onClick={handleDownloadQRCode}
+                    className="btn-primary"
+                    style={{
+                      flex: 1,
+                      height: '28px',
+                      fontSize: '0.7rem',
+                      padding: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '4px',
+                      background: 'rgba(255,255,255,0.05)',
+                      border: '1px solid var(--border-color)',
+                      color: 'var(--text-main)',
+                      boxShadow: 'none'
+                    }}
+                    title="Download QR Code"
+                  >
+                    <Download size={12} /> Download
+                  </button>
+                  <button
+                    onClick={handleShareQRCode}
+                    className="btn-primary"
+                    style={{
+                      flex: 1,
+                      height: '28px',
+                      fontSize: '0.7rem',
+                      padding: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '4px',
+                      background: 'rgba(255,255,255,0.05)',
+                      border: '1px solid var(--border-color)',
+                      color: 'var(--text-main)',
+                      boxShadow: 'none'
+                    }}
+                    title="Share QR Code"
+                  >
+                    <Share2 size={12} /> Share
+                  </button>
+                </div>
+                <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Invite Code:</span>
+                    <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{activeRoom?.invite_code || 'N/A'}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(activeRoom?.invite_code || '');
+                        showAlert && showAlert('Copied', 'Invite code copied to clipboard.');
+                      }}
+                      className="btn-primary"
+                      style={{ flex: 1, height: '30px', fontSize: '0.75rem', padding: 0 }}
+                    >
+                      Copy Code
+                    </button>
+                    <button
+                      onClick={() => {
+                        const link = `${window.location.origin}/join?code=${activeRoom?.invite_code || ''}`;
+                        navigator.clipboard.writeText(link);
+                        showAlert && showAlert('Copied', 'Invite link copied to clipboard.');
+                      }}
+                      className="btn-primary"
+                      style={{ flex: 1, height: '30px', fontSize: '0.75rem', padding: 0, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', color: 'var(--text-main)', boxShadow: 'none' }}
+                    >
+                      Copy Link
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Section 2: Send Invite to User */}
+            {userMember && (
+              <form onSubmit={handleSendInvite} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <UserPlus size={16} /> Invite User
+                </h4>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    placeholder="Enter user tag (e.g. satoshi)..."
+                    className="form-input"
+                    style={{ flex: 1, height: '36px', fontSize: '0.85rem', padding: '0 10px' }}
+                    value={inviteTargetUser}
+                    onChange={(e) => setInviteTargetUser(e.target.value)}
+                  />
+                  <button type="submit" className="btn-primary" style={{ width: 'auto', height: '36px', padding: '0 12px', fontSize: '0.85rem' }}>
+                    Send
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Section 3: Room Settings (Visibility & Banned Words) - Admins & Co-admins & Moderators only */}
+            {userMember && (() => {
+              const level = userMember.role === 'admin' ? 4 : userMember.role === 'co_admin' ? 3 : userMember.role === 'moderator' ? 2 : 1;
+              return level >= 2;
+            })() && (
+              <form onSubmit={handleSaveSettings} style={{ display: 'flex', flexDirection: 'column', gap: '12px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+                <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                  Moderation & Visibility
+                </h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Room Visibility</label>
+                  <select
+                    className="form-input"
+                    style={{ height: '36px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-main)', padding: '0 8px' }}
+                    value={roomVisibility}
+                    onChange={(e: any) => setRoomVisibility(e.target.value)}
+                  >
+                    <option value="public">🌐 Public (Anyone can find & join)</option>
+                    <option value="private">🔒 Private (Join via invite link / code)</option>
+                    <option value="invite_only">✉️ Invite Only (Explicit invitations only)</option>
+                  </select>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Banned Words (comma separated)</label>
+                  <textarea
+                    placeholder="slang1, slang2, promo1"
+                    className="form-input"
+                    style={{ minHeight: '60px', padding: '8px', fontSize: '0.85rem', background: 'var(--bg-secondary)' }}
+                    value={bannedWordsInput}
+                    onChange={(e) => setBannedWordsInput(e.target.value)}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Group Description</label>
+                  <textarea
+                    placeholder="What is this group about? Guidelines, rules, etc..."
+                    className="form-input"
+                    style={{ minHeight: '60px', padding: '8px', fontSize: '0.85rem', background: 'var(--bg-secondary)', resize: 'vertical' }}
+                    value={roomDescriptionInput}
+                    onChange={(e) => setRoomDescriptionInput(e.target.value)}
+                  />
+                </div>
+                <button type="submit" className="btn-primary" style={{ height: '36px', fontSize: '0.85rem' }}>
+                  Save Room Settings
+                </button>
+              </form>
+            )}
+
+            {/* Read-Only Description for regular members */}
+            {(!userMember || (() => {
+              const level = userMember.role === 'admin' ? 4 : userMember.role === 'co_admin' ? 3 : userMember.role === 'moderator' ? 2 : 1;
+              return level < 2;
+            })()) && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+                <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Info size={16} /> Group Description
+                </h4>
+                <div style={{ background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px', fontSize: '0.85rem', color: 'var(--text-muted)', lineHeight: '1.4', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {activeRoom?.description || 'No description set for this group.'}
+                </div>
+              </div>
+            )}
+
+            {/* Section 4: Members & Roles List */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+              <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Users size={16} /> Members ({members.length})
+              </h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '200px', overflowY: 'auto', paddingRight: '4px' }}>
+                {members.map(m => {
+                  const getRoleLevel = (roleName?: string) => {
+                    if (roleName === 'admin') return 4;
+                    if (roleName === 'co_admin') return 3;
+                    if (roleName === 'moderator') return 2;
+                    return 1;
+                  };
+                  const userLevel = userMember ? getRoleLevel(userMember.role) : 0;
+                  const memberLevel = getRoleLevel(m.role);
+                  const canManage = userLevel > memberLevel;
+                  return (
+                    <div key={m.user_tag} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.02)', padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                          @{m.user_tag}
+                        </span>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--accent-purple)', textTransform: 'capitalize' }}>
+                          {m.role.replace('_', ' ')} {m.custom_title ? `• ${m.custom_title}` : ''}
+                        </span>
+                      </div>
+                      
+                      {canManage && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <select
+                            style={{ height: '26px', fontSize: '0.75rem', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px', color: 'var(--text-main)' }}
+                            value={m.role}
+                            onChange={(e) => handleUpdateMemberRole(m.user_tag, e.target.value)}
+                          >
+                            <option value="member">Member</option>
+                            <option value="moderator">Moderator</option>
+                            {userLevel >= 4 && <option value="co_admin">Co Admin</option>}
+                          </select>
+                          <button
+                            onClick={() => handleRemoveMember(m.user_tag)}
+                            style={{ background: 'none', border: 'none', color: '#ff7043', cursor: 'pointer', padding: '4px' }}
+                            title="Remove member"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {selectedPhoto && (
         <div className="lightbox-modal" onClick={() => setSelectedPhoto(null)}>
           <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>

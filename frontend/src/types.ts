@@ -17,6 +17,9 @@ export interface Message {
   file_size?: number;
   timestamp: number;
   status: 'sent' | 'delivered' | 'seen';
+  pinned?: boolean;
+  pinned_by?: string;
+  pinned_at?: number;
 }
 
 export interface DirectMessage {
@@ -46,6 +49,25 @@ export interface UserStatus {
 export interface Room {
   name: string;
   creator_tag?: string;
+  visibility?: 'public' | 'private' | 'invite_only';
+  invite_code?: string;
+  banned_words?: string;
+  description?: string;
+}
+
+export interface RoomMember {
+  room_tag: string;
+  user_tag: string;
+  role: 'admin' | 'co_admin' | 'moderator' | 'member';
+  custom_title?: string;
+}
+
+export interface RoomInvitation {
+  id: string;
+  room_tag: string;
+  sender_tag: string;
+  receiver_tag: string;
+  status: 'pending' | 'accepted' | 'declined';
 }
 
 export interface StatusPermission {

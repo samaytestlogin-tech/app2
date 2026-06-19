@@ -55,6 +55,13 @@ struct MsgSeenPayload {
 }
 
 #[derive(Debug, serde::Deserialize, Clone)]
+struct PinMessagePayload {
+    message_id: String,
+    room_tag: String,
+    user_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, Clone)]
 struct PostStatusPayload {
     id: String,
     creator_id: String,
@@ -103,6 +110,45 @@ struct JoinDirectChatPayload {
     sender_tag: String,
     receiver_tag: String,
 }
+
+#[derive(Debug, serde::Deserialize)]
+struct UpdateMemberRolePayload {
+    role: String,
+    custom_title: Option<String>,
+    req_by: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RemoveMemberPayload {
+    req_by: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SendInvitationPayload {
+    sender_tag: String,
+    receiver_tag: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HandleInvitationPayload {
+    accept: bool,
+    user_tag: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct JoinByCodePayload {
+    invite_code: String,
+    user_tag: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct UpdateSettingsPayload {
+    visibility: String,
+    banned_words: String,
+    description: Option<String>,
+    req_by: String,
+}
+
 
 #[derive(serde::Serialize)]
 struct UploadResponse {
@@ -212,7 +258,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     };
 
-                    socket.emit("room_history", &history_payload(&db, &payload.room_tag)).ok();
+                    let history = history_payload(&db, &payload.room_tag, &payload.user_id);
+                    println!("Emitting room_history to user_id {}: count = {}", payload.user_id, history.len());
+                    socket.emit("room_history", &history).ok();
 
                     if !updated_ids.is_empty() {
                         let _ = socket
@@ -247,16 +295,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         file_size: payload.file_size,
                         timestamp: chrono::Utc::now().timestamp_millis(),
                         status: "sent".to_string(),
+                        pinned: None,
+                        pinned_by: None,
+                        pinned_at: None,
                     };
 
                     match db.insert_message(&msg) {
-                        Ok(_) => {
-                            let _ = socket.to(payload.room_tag.clone()).emit("new_msg", &msg).await;
-                            let _ = socket.emit("new_msg", &msg).ok();
+                        Ok(clean_msg) => {
+                            let _ = socket.to(payload.room_tag.clone()).emit("new_msg", &clean_msg).await;
+                            let _ = socket.emit("new_msg", &clean_msg).ok();
                             socket
                                 .emit(
                                     "msg_sent",
-                                    &serde_json::json!({ "id": msg.id, "status": "sent" }),
+                                    &serde_json::json!({ "id": clean_msg.id, "status": "sent" }),
                                 )
                                 .ok();
                         }
@@ -620,6 +671,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
 
+            let db_for_pin = db.clone();
+            socket.on("pin_message", move |socket: SocketRef, Data(payload): Data<PinMessagePayload>| {
+                let db = db_for_pin.clone();
+                async move {
+                    if let Ok(true) = db.is_room_member(&payload.room_tag, &payload.user_id) {
+                        match db.pin_message(&payload.message_id, &payload.user_id) {
+                            Ok(Some(msg)) => {
+                                let _ = socket.to(payload.room_tag.clone()).emit("message_pinned", &msg).await;
+                                let _ = socket.emit("message_pinned", &msg).ok();
+                            }
+                            other => {
+                                eprintln!("Error pinning message {}: {:?}", payload.message_id, other);
+                            }
+                        }
+                    }
+                }
+            });
+
+            let db_for_unpin = db.clone();
+            socket.on("unpin_message", move |socket: SocketRef, Data(payload): Data<PinMessagePayload>| {
+                let db = db_for_unpin.clone();
+                async move {
+                    if let Ok(true) = db.is_room_member(&payload.room_tag, &payload.user_id) {
+                        let mut allowed = false;
+                        if let Ok(req_lvl) = db.get_member_role_level(&payload.room_tag, &payload.user_id) {
+                            if req_lvl >= 2 {
+                                allowed = true;
+                            }
+                        }
+
+                        if !allowed {
+                            if let Ok(Some(msg)) = db.get_message_by_id(&payload.message_id) {
+                                if let Some(pinned_by) = msg.pinned_by {
+                                    if pinned_by == payload.user_id {
+                                        allowed = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        if allowed {
+                            match db.unpin_message(&payload.message_id) {
+                                Ok(Some(_msg)) => {
+                                    let payload_out = serde_json::json!({
+                                        "message_id": payload.message_id,
+                                        "room_tag": payload.room_tag
+                                    });
+                                    let _ = socket.to(payload.room_tag.clone()).emit("message_unpinned", &payload_out).await;
+                                    let _ = socket.emit("message_unpinned", &payload_out).ok();
+                                }
+                                other => {
+                                    eprintln!("Error unpinning message {}: {:?}", payload.message_id, other);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
             // K. Socket Disconnect Handler
             let reg_for_disc = registry.clone();
             socket.on_disconnect(move |socket: SocketRef| {
@@ -647,6 +757,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/tags", get(get_tags))
         .route("/api/rooms", post(create_room_route))
         .route("/api/rooms/{name}", put(update_room_route).delete(delete_room_route))
+        .route("/api/rooms/{room_tag}/members", get(get_room_members_route))
+        .route("/api/rooms/{room_tag}/members/{user_tag}", put(update_room_member_role_route).delete(remove_room_member_route))
+        .route("/api/rooms/{room_tag}/invitations", post(send_room_invitation_route))
+        .route("/api/users/{user_tag}/invitations", get(get_room_invitations_route))
+        .route("/api/invitations/{invite_id}", put(handle_room_invitation_route))
+        .route("/api/rooms/join", post(join_room_by_invite_code_route))
+        .route("/api/rooms/{room_tag}/settings", put(update_room_settings_route))
+        .route("/api/rooms/{room_tag}/pins", get(get_pinned_messages_route))
         .route("/api/statuses/{id}", delete(delete_status_route))
         .route("/api/status-permissions", post(set_permission_route).get(get_permissions_route))
         .route("/api/status-permissions/check", get(check_permission_route))
@@ -675,11 +793,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ----------------------------------------------------
 // Axum REST & Helper Functions
 // ----------------------------------------------------
-fn history_payload(db: &db::Db, room_tag: &str) -> Vec<db::Message> {
-    match db.get_messages(room_tag, 100) {
+fn history_payload(db: &db::Db, room_tag: &str, user_tag: &str) -> Vec<db::Message> {
+    match db.get_messages_for_user(room_tag, 100, user_tag) {
         Ok(msgs) => msgs,
         Err(e) => {
-            eprintln!("Error getting messages for room {}: {:?}", room_tag, e);
+            eprintln!("Error getting messages for room {} for user {}: {:?}", room_tag, user_tag, e);
             Vec::new()
         }
     }
@@ -1012,4 +1130,118 @@ fn send_web_push(receiver_tag: &str, title: &str, body: &str, data_type: &str, e
         }
     });
 }
+
+async fn get_room_members_route(
+    State(state): State<AppState>,
+    Path(room_tag): Path<String>,
+) -> Result<Json<Vec<db::DbRoomMember>>, StatusCode> {
+    match state.db.get_room_members(&room_tag) {
+        Ok(members) => Ok(Json(members)),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn update_room_member_role_route(
+    State(state): State<AppState>,
+    Path((room_tag, user_tag)): Path<(String, String)>,
+    Json(payload): Json<UpdateMemberRolePayload>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    match state.db.update_room_member_role(&room_tag, &user_tag, &payload.role, payload.custom_title, &payload.req_by) {
+        Ok(true) => Ok(Json(serde_json::json!({ "status": "success" }))),
+        Ok(false) => Err(StatusCode::FORBIDDEN),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn remove_room_member_route(
+    State(state): State<AppState>,
+    Path((room_tag, user_tag)): Path<(String, String)>,
+    Json(payload): Json<RemoveMemberPayload>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    match state.db.remove_room_member(&room_tag, &user_tag, &payload.req_by) {
+        Ok(true) => Ok(Json(serde_json::json!({ "status": "success" }))),
+        Ok(false) => Err(StatusCode::FORBIDDEN),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn send_room_invitation_route(
+    State(state): State<AppState>,
+    Path(room_tag): Path<String>,
+    Json(payload): Json<SendInvitationPayload>,
+) -> Result<Json<db::DbRoomInvitation>, StatusCode> {
+    match state.db.send_room_invitation(&room_tag, &payload.sender_tag, &payload.receiver_tag) {
+        Ok(inv) => {
+            send_web_push(
+                &payload.receiver_tag,
+                "✉️ New Group Invitation",
+                &format!("You've been invited to join #{}", room_tag),
+                "room_invitation",
+                serde_json::json!({ "room_tag": room_tag })
+            );
+            Ok(Json(inv))
+        },
+        Err(e) => {
+            eprintln!("Error sending invitation: {:?}", e);
+            Err(StatusCode::BAD_REQUEST)
+        }
+    }
+}
+
+async fn get_room_invitations_route(
+    State(state): State<AppState>,
+    Path(user_tag): Path<String>,
+) -> Result<Json<Vec<db::DbRoomInvitation>>, StatusCode> {
+    match state.db.get_room_invitations(&user_tag) {
+        Ok(invites) => Ok(Json(invites)),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn handle_room_invitation_route(
+    State(state): State<AppState>,
+    Path(invite_id): Path<String>,
+    Json(payload): Json<HandleInvitationPayload>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    match state.db.handle_room_invitation(&invite_id, payload.accept, &payload.user_tag) {
+        Ok(true) => Ok(Json(serde_json::json!({ "status": "success" }))),
+        Ok(false) => Err(StatusCode::FORBIDDEN),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn join_room_by_invite_code_route(
+    State(state): State<AppState>,
+    Json(payload): Json<JoinByCodePayload>,
+) -> Result<Json<db::DbRoom>, StatusCode> {
+    match state.db.join_room_by_invite_code(&payload.invite_code, &payload.user_tag) {
+        Ok(Some(room)) => Ok(Json(room)),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn update_room_settings_route(
+    State(state): State<AppState>,
+    Path(room_tag): Path<String>,
+    Json(payload): Json<UpdateSettingsPayload>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let desc = payload.description.as_deref().unwrap_or("");
+    match state.db.update_room_settings(&room_tag, &payload.visibility, &payload.banned_words, desc, &payload.req_by) {
+        Ok(true) => Ok(Json(serde_json::json!({ "status": "success" }))),
+        Ok(false) => Err(StatusCode::FORBIDDEN),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn get_pinned_messages_route(
+    State(state): State<AppState>,
+    Path(room_tag): Path<String>,
+) -> Result<Json<Vec<db::Message>>, StatusCode> {
+    match state.db.get_pinned_messages(&room_tag) {
+        Ok(msgs) => Ok(Json(msgs)),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
 
