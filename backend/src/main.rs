@@ -81,6 +81,15 @@ struct SignupPayload {
 }
 
 #[derive(Debug, serde::Deserialize)]
+struct UpdateProfilePayload {
+    tag: String,
+    name: String,
+    avatar: String,
+    bio: String,
+    current_password: Option<String>,
+    new_password: Option<String>,
+}
+#[derive(Debug, serde::Deserialize)]
 struct LoginPayload {
     tag: String,
     password: String,
@@ -763,6 +772,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/users/{user_tag}/invitations", get(get_room_invitations_route))
         .route("/api/invitations/{invite_id}", put(handle_room_invitation_route))
         .route("/api/rooms/join", post(join_room_by_invite_code_route))
+        .route("/api/rooms/{room_tag}/join_public", post(join_public_room_route))
         .route("/api/rooms/{room_tag}/settings", put(update_room_settings_route))
         .route("/api/rooms/{room_tag}/pins", get(get_pinned_messages_route))
         .route("/api/statuses/{id}", delete(delete_status_route))
@@ -772,6 +782,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/auth/signup", post(signup))
         .route("/api/auth/login", post(login))
         .route("/api/users", get(get_users))
+        .route("/api/users/update-profile", post(update_profile_route))
         .route("/api/users/chatted", get(get_chatted_users))
         .route("/api/chats/summary", get(get_chat_summary))
         .route("/api/push/subscribe", post(subscribe_push))
@@ -803,8 +814,16 @@ fn history_payload(db: &db::Db, room_tag: &str, user_tag: &str) -> Vec<db::Messa
     }
 }
 
-async fn get_tags(State(state): State<AppState>) -> Result<Json<Vec<db::DbRoom>>, StatusCode> {
-    state.db.get_rooms()
+#[derive(Debug, serde::Deserialize)]
+struct GetTagsParams {
+    user_tag: Option<String>,
+}
+
+async fn get_tags(
+    State(state): State<AppState>,
+    Query(params): Query<GetTagsParams>,
+) -> Result<Json<Vec<db::DbRoom>>, StatusCode> {
+    state.db.get_rooms_for_user(params.user_tag.as_deref())
         .map(Json)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
@@ -845,9 +864,30 @@ async fn get_users(
             "username": u.name,
             "avatar": u.avatar,
             "online": online,
+            "bio": u.bio,
         }));
     }
     Ok(Json(serde_json::json!(users_with_status)))
+}
+
+async fn update_profile_route(
+    State(state): State<AppState>,
+    Json(payload): Json<UpdateProfilePayload>,
+) -> Result<Json<db::DbUser>, StatusCode> {
+    let curr_pwd = payload.current_password.as_deref();
+    let new_pwd = payload.new_password.as_deref();
+
+    match state.db.update_user_profile(&payload.tag, &payload.name, &payload.avatar, &payload.bio, curr_pwd, new_pwd) {
+        Ok(user) => Ok(Json(user)),
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("Unauthorized") {
+                Err(StatusCode::UNAUTHORIZED)
+            } else {
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+    }
 }
 
 async fn get_chatted_users(
@@ -1217,6 +1257,31 @@ async fn join_room_by_invite_code_route(
     match state.db.join_room_by_invite_code(&payload.invite_code, &payload.user_tag) {
         Ok(Some(room)) => Ok(Json(room)),
         Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct JoinPublicRoomPayload {
+    user_tag: String,
+}
+
+async fn join_public_room_route(
+    State(state): State<AppState>,
+    Path(room_tag): Path<String>,
+    Json(payload): Json<JoinPublicRoomPayload>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let rooms = state.db.get_rooms().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let room = rooms.iter().find(|r| r.name == room_tag).cloned();
+    let Some(room) = room else {
+        println!("DEBUG join_public: room {} not found. available: {:?}", room_tag, rooms.iter().map(|r| &r.name).collect::<Vec<_>>());
+        return Err(StatusCode::NOT_FOUND);
+    };
+    if room.visibility.as_deref() != Some("public") {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    match state.db.add_room_member(&room_tag, &payload.user_tag, "member", "Member") {
+        Ok(_) => Ok(Json(serde_json::json!({ "status": "success" }))),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }

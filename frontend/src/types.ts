@@ -3,6 +3,7 @@ export interface User {
   username: string; // Display name
   avatar: string; // Avatar emoji
   online?: boolean;
+  bio?: string;
 }
 
 export interface Message {
@@ -53,6 +54,7 @@ export interface Room {
   invite_code?: string;
   banned_words?: string;
   description?: string;
+  is_member?: boolean;
 }
 
 export interface RoomMember {

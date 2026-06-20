@@ -41,6 +41,7 @@ pub struct DbUser {
     pub tag: String,
     pub name: String,
     pub avatar: String,
+    pub bio: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -65,6 +66,7 @@ pub struct DbRoom {
     pub invite_code: Option<String>,
     pub banned_words: Option<String>,
     pub description: Option<String>,
+    pub is_member: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -273,6 +275,7 @@ impl Db {
                 ("name", "string", 255),
                 ("avatar", "string", 255),
                 ("password_hash", "string", 255),
+                ("bio", "string", 1000),
             ]),
             ("rooms", "rooms", vec![
                 ("name", "string", 255),
@@ -723,6 +726,7 @@ impl Db {
                     invite_code,
                     banned_words,
                     description,
+                    is_member: None,
                 });
             }
             rooms.sort_by(|a, b| a.name.cmp(&b.name));
@@ -735,6 +739,53 @@ impl Db {
         }
 
         Ok(rooms)
+    }
+
+    pub fn get_rooms_for_user(&self, user_tag: Option<&str>) -> Result<Vec<DbRoom>> {
+        let all_rooms = self.get_rooms()?;
+        let Some(user_tag) = user_tag else {
+            return Ok(all_rooms.into_iter().map(|mut r| {
+                r.is_member = Some(false);
+                r
+            }).filter(|r| r.visibility.as_deref() == Some("public")).collect());
+        };
+
+        if user_tag.is_empty() {
+            return Ok(all_rooms.into_iter().map(|mut r| {
+                r.is_member = Some(false);
+                r
+            }).filter(|r| r.visibility.as_deref() == Some("public")).collect());
+        }
+
+        let member_room_tags = run_appwrite(async {
+            let q = vec![
+                json!({ "method": "equal", "attribute": "user_tag", "values": [user_tag] }).to_string(),
+                json!({ "method": "limit", "values": [1000] }).to_string(),
+            ];
+            let docs = self.list_documents("room_members", &q).await.map_err(map_err)?;
+            let mut tags = std::collections::HashSet::new();
+            for d in docs {
+                if let Some(tag) = d["room_tag"].as_str() {
+                    tags.insert(tag.to_string());
+                }
+            }
+            Ok(tags)
+        })?;
+
+        let filtered = all_rooms
+            .into_iter()
+            .map(|mut r| {
+                let is_mem = r.creator_tag.as_deref() == Some(user_tag) || member_room_tags.contains(&r.name);
+                r.is_member = Some(is_mem);
+                r
+            })
+            .filter(|r| {
+                r.visibility.as_deref() == Some("public")
+                    || r.is_member == Some(true)
+            })
+            .collect();
+
+        Ok(filtered)
     }
 
 
@@ -1038,6 +1089,7 @@ impl Db {
                             tag: tag.to_string(),
                             name: doc["name"].as_str().unwrap_or("").to_string(),
                             avatar: doc["avatar"].as_str().unwrap_or("").to_string(),
+                            bio: doc.get("bio").and_then(|v| v.as_str()).map(|s| s.to_string()),
                         }))
                     } else {
                         Ok(None)
@@ -1067,6 +1119,7 @@ impl Db {
                     tag: d["tag"].as_str().unwrap_or("").to_string(),
                     name: d["name"].as_str().unwrap_or("").to_string(),
                     avatar: d["avatar"].as_str().unwrap_or("").to_string(),
+                    bio: d.get("bio").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 });
             }
             Ok(users)
@@ -1393,6 +1446,41 @@ impl Db {
         })
     }
 
+    pub fn add_room_member(&self, room_tag: &str, user_tag: &str, role: &str, custom_title: &str) -> Result<bool> {
+        run_appwrite(async {
+            let mut is_explicit_member = false;
+            if let Some(room) = self.get_document("rooms", room_tag).await.map_err(map_err)? {
+                if room["creator_tag"].as_str() == Some(user_tag) {
+                    is_explicit_member = true;
+                }
+            }
+            if !is_explicit_member {
+                let q = vec![
+                    json!({ "method": "equal", "attribute": "room_tag", "values": [room_tag] }).to_string(),
+                    json!({ "method": "equal", "attribute": "user_tag", "values": [user_tag] }).to_string(),
+                    json!({ "method": "limit", "values": [1] }).to_string(),
+                ];
+                let docs = self.list_documents("room_members", &q).await.map_err(map_err)?;
+                if !docs.is_empty() {
+                    is_explicit_member = true;
+                }
+            }
+
+            if !is_explicit_member {
+                let member_doc_id = uuid::Uuid::new_v4().to_string();
+                self.create_document("room_members", &member_doc_id, json!({
+                    "room_tag": room_tag,
+                    "user_tag": user_tag,
+                    "role": role,
+                    "custom_title": custom_title
+                })).await.map_err(map_err)?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        })
+    }
+
     pub fn get_room_members(&self, room_tag: &str) -> Result<Vec<DbRoomMember>> {
         run_appwrite(async {
             let q = vec![
@@ -1481,10 +1569,35 @@ impl Db {
 
     pub fn send_room_invitation(&self, room_tag: &str, sender_tag: &str, receiver_tag: &str) -> Result<DbRoomInvitation> {
         run_appwrite(async {
-            let is_mem = self.is_room_member(room_tag, receiver_tag)?;
+            // Verify receiver user exists in Appwrite database
+            let user_exists = self.get_document("users", receiver_tag).await.map_err(map_err)?.is_some();
+            if !user_exists {
+                return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError("User does not exist".to_string()))));
+            }
+
+            // Check if explicitly a member (in room_members or creator of room)
+            let mut is_mem = false;
+            if let Some(room) = self.get_document("rooms", room_tag).await.map_err(map_err)? {
+                if room["creator_tag"].as_str() == Some(receiver_tag) {
+                    is_mem = true;
+                }
+            }
+            if !is_mem {
+                let q = vec![
+                    json!({ "method": "equal", "attribute": "room_tag", "values": [room_tag] }).to_string(),
+                    json!({ "method": "equal", "attribute": "user_tag", "values": [receiver_tag] }).to_string(),
+                    json!({ "method": "limit", "values": [1] }).to_string(),
+                ];
+                let docs = self.list_documents("room_members", &q).await.map_err(map_err)?;
+                if !docs.is_empty() {
+                    is_mem = true;
+                }
+            }
+
             if is_mem {
                 return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError("User is already a member".to_string()))));
             }
+
             let has_inv = self.has_pending_invitation(room_tag, receiver_tag)?;
             if has_inv {
                 return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError("Invitation already pending".to_string()))));
@@ -1584,6 +1697,7 @@ impl Db {
                     invite_code: Some(invite_code.to_string()),
                     banned_words: d["banned_words"].as_str().map(|s| s.to_string()),
                     description: d["description"].as_str().map(|s| s.to_string()),
+                    is_member: Some(true),
                 };
 
                 let is_mem = self.is_room_member(room_tag, user_tag)?;
@@ -2030,6 +2144,55 @@ impl Db {
         })
     }
 
+    pub fn update_user_profile(
+        &self,
+        tag: &str,
+        name: &str,
+        avatar: &str,
+        bio: &str,
+        current_password: Option<&str>,
+        new_password: Option<&str>,
+    ) -> Result<DbUser> {
+        let res = run_appwrite(async {
+            let doc = self.get_document("users", tag).await.map_err(map_err)?
+                .ok_or_else(|| rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError("User not found".to_string()))))?;
+
+            let mut updated_data = json!({
+                "name": name,
+                "avatar": avatar,
+                "bio": bio,
+            });
+
+            if let Some(new_pwd) = new_password {
+                if !new_pwd.trim().is_empty() {
+                    let current_pwd = current_password.unwrap_or("");
+                    let stored_hash = doc["password_hash"].as_str().unwrap_or("");
+                    if !bcrypt::verify(current_pwd, stored_hash).unwrap_or(false) {
+                        return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(AppwriteError("Unauthorized: Invalid password".to_string()))));
+                    }
+                    let new_hash = bcrypt::hash(new_pwd, bcrypt::DEFAULT_COST).map_err(map_err)?;
+                    updated_data["password_hash"] = serde_json::Value::String(new_hash);
+                }
+            }
+
+            let _ = self.update_document("users", tag, updated_data).await.map_err(map_err)?;
+
+            Ok(DbUser {
+                tag: tag.to_string(),
+                name: name.to_string(),
+                avatar: avatar.to_string(),
+                bio: if bio.trim().is_empty() { None } else { Some(bio.to_string()) },
+            })
+        })?;
+
+        // Invalidate users cache
+        {
+            let mut cache = self.users_cache.write().unwrap();
+            *cache = None;
+        }
+
+        Ok(res)
+    }
 
     pub fn upload_file(&self, bytes: &[u8], filename: &str) -> Result<String> {
         let url = format!("{}/storage/buckets/{}/files", self.endpoint, self.bucket_id);

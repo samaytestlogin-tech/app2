@@ -4,7 +4,7 @@ import {
   FileText, Download, Play, Pause, Volume2, Phone,
   Settings, Users, ShieldAlert,
   QrCode, UserPlus, Trash2, Pin, PinOff, Search,
-  Share2, Info
+  Share2, Info, Edit3
 } from 'lucide-react';
 import type { User, Message, DirectMessage, Room, RoomMember, RoomInvitation } from '../types';
 import { socket, getUploadUrl, BACKEND_URL } from '../socket';
@@ -21,6 +21,7 @@ interface ChatRoomProps {
   rooms: Room[];
   fetchRooms: () => Promise<void>;
   allUsers: User[];
+  onSetActiveTag?: (tag: string | null) => void;
 }
 
 const formatMessageDate = (timestamp: number) => {
@@ -94,6 +95,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   showAlert,
   rooms,
   fetchRooms,
+  onSetActiveTag,
 }) => {
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -105,6 +107,10 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   // Group Features state
   const [members, setMembers] = useState<RoomMember[]>([]);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showMembersModal, setShowMembersModal] = useState(false);
+  const [memberSearchQuery, setMemberSearchQuery] = useState('');
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [newRoomNameInput, setNewRoomNameInput] = useState('');
 
   const [roomVisibility, setRoomVisibility] = useState<'public' | 'private' | 'invite_only'>('public');
   const [bannedWordsInput, setBannedWordsInput] = useState('');
@@ -122,6 +128,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
 
   const isDirect = activeDirectUser !== null;
   const activeRoom = rooms.find(r => r.name === activeTag);
+  const isRoomCreator = activeRoom && activeRoom.creator_tag === currentUser.tag;
   const userMember = members.find(m => m.user_tag === currentUser.tag);
 
   const fetchMembers = async () => {
@@ -190,6 +197,23 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   const handleAcceptInvite = async () => {
     if (!activeTag) return;
     try {
+      const isPublic = !activeRoom?.visibility || activeRoom?.visibility === 'public';
+      if (isPublic) {
+        const res = await fetch(`${BACKEND_URL}/api/rooms/${activeTag}/join_public`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_tag: currentUser.tag }),
+        });
+        if (res.ok) {
+          fetchMembers();
+          fetchRooms();
+          showAlert && showAlert('Joined Group!', 'You have successfully joined the group.');
+        } else {
+          showAlert && showAlert('Error', 'Failed to join group.');
+        }
+        return;
+      }
+
       const invRes = await fetch(`${BACKEND_URL}/api/users/${currentUser.tag}/invitations`);
       if (invRes.ok) {
         const invites: RoomInvitation[] = await invRes.json();
@@ -368,6 +392,70 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
       console.error(e);
     }
   };
+
+  const handleRenameRoom = () => {
+    setNewRoomNameInput(activeTag || '');
+    setShowRenameModal(true);
+  };
+
+  const submitRenameRoom = async () => {
+    if (!activeRoom || !activeTag || !newRoomNameInput.trim()) return;
+    const cleanNewName = newRoomNameInput.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '');
+    if (!cleanNewName || cleanNewName === activeTag) return;
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/rooms/${activeTag}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          new_name: cleanNewName,
+          user_tag: currentUser.tag,
+        }),
+      });
+      if (res.ok) {
+        setShowRenameModal(false);
+        setShowSettingsModal(false);
+        setNewRoomNameInput('');
+        await fetchRooms();
+        if (onSetActiveTag) {
+          onSetActiveTag(cleanNewName);
+        }
+      } else {
+        showAlert && showAlert('Rename Failed', 'Failed to rename group. You may not be authorized.');
+      }
+    } catch (err) {
+      console.error('Failed to rename group', err);
+    }
+  };
+
+  const handleDeleteRoom = async () => {
+    if (!activeRoom || !activeTag) return;
+    const confirmed = await (showAlert ? showAlert(
+      "Delete Group",
+      `Are you sure you want to delete group #${activeTag}?\nAll messages inside will be permanently deleted.`
+    ) : confirm(`Are you sure you want to delete group #${activeTag}?`));
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/rooms/${activeTag}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_tag: currentUser.tag,
+        }),
+      });
+      if (res.ok) {
+        setShowSettingsModal(false);
+        await fetchRooms();
+        onBackToSidebar();
+      } else {
+        showAlert && showAlert('Delete Failed', 'Failed to delete group. You may not be authorized.');
+      }
+    } catch (err) {
+      console.error('Failed to delete group', err);
+    }
+  };
+
   const activeMessages = isDirect ? directMessages : messages;
 
   useEffect(() => {
@@ -753,12 +841,20 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
             </div>
             <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
               {isDirect ? (
-                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  @{activeDirectUser.tag} •{' '}
-                  <span style={{ color: activeDirectUser.online ? '#2ec4b6' : 'var(--text-muted)' }}>
-                    {activeDirectUser.online ? 'Online' : 'Offline'}
+                <>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    @{activeDirectUser.tag} •{' '}
+                    <span style={{ color: activeDirectUser.online ? '#2ec4b6' : 'var(--text-muted)' }}>
+                      {activeDirectUser.online ? 'Online' : 'Offline'}
+                    </span>
                   </span>
-                </span>
+                  {activeDirectUser.bio && (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', maxWidth: '350px', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', marginTop: '2px' }} title={activeDirectUser.bio}>
+                      <Info size={11} style={{ flexShrink: 0, color: 'var(--accent)' }} />
+                      <span>{activeDirectUser.bio}</span>
+                    </span>
+                  )}
+                </>
               ) : (
                 <>
                   <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1186,7 +1282,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
           <div className="pinned-sidebar" style={{
             width: '380px',
             borderLeft: '1px solid var(--border-color)',
-            background: 'var(--bg-glass)',
+            background: 'var(--glass-bg)',
             backdropFilter: 'blur(20px)',
             display: 'flex',
             flexDirection: 'column',
@@ -1587,7 +1683,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
           padding: '24px'
         }}>
           <div style={{
-            background: 'var(--bg-glass)',
+            background: 'var(--bg-secondary)',
             border: '1px solid var(--border-color)',
             borderRadius: '16px',
             padding: '28px',
@@ -1658,7 +1754,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
           padding: '24px'
         }}>
           <div style={{
-            background: 'var(--bg-glass)',
+            background: 'var(--bg-secondary)',
             border: '1px solid var(--border-color)',
             borderRadius: '16px',
             padding: '24px',
@@ -1861,13 +1957,203 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
               </div>
             )}
 
-            {/* Section 4: Members & Roles List */}
+            {/* Section 4: Group Members Button */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
               <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Users size={16} /> Members ({members.length})
+                <Users size={16} /> Group Members
               </h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '200px', overflowY: 'auto', paddingRight: '4px' }}>
-                {members.map(m => {
+              <button
+                type="button"
+                onClick={() => setShowMembersModal(true)}
+                style={{
+                  width: '100%',
+                  height: '38px',
+                  background: 'rgba(255, 255, 255, 0.03)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  color: 'var(--text-main)',
+                  fontSize: '0.85rem',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '0 12px',
+                  transition: 'background 0.2s'
+                }}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Users size={14} style={{ color: 'var(--accent-purple)' }} />
+                  View & Manage Members
+                </span>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: '12px' }}>
+                  {members.length} {members.length === 1 ? 'member' : 'members'}
+                </span>
+              </button>
+            </div>
+
+            {/* Danger Zone (Rename / Delete Group) - Creator only */}
+            {isRoomCreator && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid rgba(255, 92, 92, 0.2)', paddingTop: '16px' }}>
+                <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: '#ff7043', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <ShieldAlert size={16} /> Danger Zone
+                </h4>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button
+                    type="button"
+                    onClick={handleRenameRoom}
+                    className="btn-primary"
+                    style={{
+                      flex: 1,
+                      height: '36px',
+                      fontSize: '0.85rem',
+                      background: 'rgba(255, 255, 255, 0.05)',
+                      border: '1px solid var(--border-color)',
+                      color: 'var(--text-main)',
+                      boxShadow: 'none',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '4px'
+                    }}
+                  >
+                    <Edit3 size={14} /> Rename Group
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteRoom}
+                    style={{
+                      flex: 1,
+                      height: '36px',
+                      fontSize: '0.85rem',
+                      background: 'rgba(255, 92, 92, 0.1)',
+                      border: '1px solid #ff7043',
+                      color: '#ff7043',
+                      borderRadius: '10px',
+                      cursor: 'pointer',
+                      fontWeight: 600,
+                      transition: 'all 0.2s',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '4px'
+                    }}
+                  >
+                    <Trash2 size={14} /> Delete Group
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Group Members List Modal */}
+      {showMembersModal && activeTag && activeRoom && (
+        <div style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.75)',
+          backdropFilter: 'blur(10px)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 999,
+          padding: '24px'
+        }}>
+          <div style={{
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '16px',
+            padding: '24px',
+            maxWidth: '500px',
+            width: '100%',
+            maxHeight: '80vh',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px',
+            boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.37)'
+          }}>
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Users size={20} style={{ color: 'var(--accent-purple)' }} />
+                <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                  Group Members
+                </h3>
+                <span style={{ fontSize: '0.8rem', background: 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: '12px', color: 'var(--text-muted)' }}>
+                  {members.length}
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  setShowMembersModal(false);
+                  setMemberSearchQuery('');
+                }}
+                style={{ background: 'rgba(255,255,255,0.04)', border: 'none', borderRadius: '50%', color: 'var(--text-main)', cursor: 'pointer', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Search Bar */}
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <Search size={16} style={{ position: 'absolute', left: '12px', color: 'var(--text-muted)' }} />
+              <input
+                type="text"
+                placeholder="Search members by name or tag..."
+                value={memberSearchQuery}
+                onChange={(e) => setMemberSearchQuery(e.target.value)}
+                style={{
+                  width: '100%',
+                  height: '38px',
+                  paddingLeft: '36px',
+                  paddingRight: '12px',
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  color: 'var(--text-main)',
+                  fontSize: '0.85rem'
+                }}
+              />
+              {memberSearchQuery && (
+                <button
+                  onClick={() => setMemberSearchQuery('')}
+                  style={{
+                    position: 'absolute',
+                    right: '12px',
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-muted)',
+                    cursor: 'pointer',
+                    padding: 0
+                  }}
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
+            {/* Members List */}
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px', paddingRight: '4px' }}>
+              {(() => {
+                const filtered = members.filter(m => 
+                  m.user_tag.toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
+                  (m.custom_title || '').toLowerCase().includes(memberSearchQuery.toLowerCase())
+                );
+                
+                if (filtered.length === 0) {
+                  return (
+                    <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem', padding: '24px 0' }}>
+                      No members found matching your search.
+                    </div>
+                  );
+                }
+
+                return filtered.map(m => {
                   const getRoleLevel = (roleName?: string) => {
                     if (roleName === 'admin') return 4;
                     if (roleName === 'co_admin') return 3;
@@ -1877,21 +2163,22 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                   const userLevel = userMember ? getRoleLevel(userMember.role) : 0;
                   const memberLevel = getRoleLevel(m.role);
                   const canManage = userLevel > memberLevel;
+
                   return (
-                    <div key={m.user_tag} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.02)', padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                    <div key={m.user_tag} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.02)', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
                       <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                        <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)' }}>
                           @{m.user_tag}
                         </span>
-                        <span style={{ fontSize: '0.7rem', color: 'var(--accent-purple)', textTransform: 'capitalize' }}>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--accent-purple)', textTransform: 'capitalize' }}>
                           {m.role.replace('_', ' ')} {m.custom_title ? `• ${m.custom_title}` : ''}
                         </span>
                       </div>
                       
                       {canManage && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <select
-                            style={{ height: '26px', fontSize: '0.75rem', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px', color: 'var(--text-main)' }}
+                            style={{ height: '28px', fontSize: '0.8rem', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px', color: 'var(--text-main)', padding: '0 4px' }}
                             value={m.role}
                             onChange={(e) => handleUpdateMemberRole(m.user_tag, e.target.value)}
                           >
@@ -1901,17 +2188,138 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                           </select>
                           <button
                             onClick={() => handleRemoveMember(m.user_tag)}
-                            style={{ background: 'none', border: 'none', color: '#ff7043', cursor: 'pointer', padding: '4px' }}
+                            style={{ background: 'none', border: 'none', color: '#ff7043', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center' }}
                             title="Remove member"
                           >
-                            <Trash2 size={14} />
+                            <Trash2 size={16} />
                           </button>
                         </div>
                       )}
                     </div>
                   );
-                })}
+                });
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Group Rename Modal */}
+      {showRenameModal && activeTag && activeRoom && (
+        <div style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.75)',
+          backdropFilter: 'blur(10px)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 1000,
+          padding: '24px'
+        }}>
+          <div style={{
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '16px',
+            padding: '24px',
+            maxWidth: '400px',
+            width: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px',
+            boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.37)'
+          }}>
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Edit3 size={20} style={{ color: 'var(--accent-purple)' }} />
+                <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                  Rename Group
+                </h3>
               </div>
+              <button
+                onClick={() => {
+                  setShowRenameModal(false);
+                  setNewRoomNameInput('');
+                }}
+                style={{ background: 'rgba(255,255,255,0.04)', border: 'none', borderRadius: '50%', color: 'var(--text-main)', cursor: 'pointer', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Description */}
+            <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+              Enter a new name for the group <strong>#{activeTag}</strong>. Only lowercase letters, numbers, hyphens, and underscores are allowed.
+            </p>
+
+            {/* Input */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <input
+                type="text"
+                value={newRoomNameInput}
+                onChange={(e) => {
+                  const cleaned = e.target.value.toLowerCase().replace(/[^a-z0-9-_]/g, '');
+                  setNewRoomNameInput(cleaned);
+                }}
+                placeholder="new-group-name"
+                style={{
+                  width: '100%',
+                  height: '38px',
+                  padding: '0 12px',
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  color: 'var(--text-main)',
+                  fontSize: '0.85rem'
+                }}
+              />
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRenameModal(false);
+                  setNewRoomNameInput('');
+                }}
+                style={{
+                  flex: 1,
+                  height: '36px',
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  border: '1px solid var(--border-color)',
+                  color: 'var(--text-main)',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '0.85rem',
+                  fontWeight: 500
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitRenameRoom}
+                disabled={!newRoomNameInput.trim() || newRoomNameInput.trim() === activeTag}
+                style={{
+                  flex: 1,
+                  height: '36px',
+                  background: 'linear-gradient(135deg, var(--accent-purple) 0%, #7c3aed 100%)',
+                  border: 'none',
+                  color: 'white',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '0.85rem',
+                  fontWeight: 600,
+                  opacity: (!newRoomNameInput.trim() || newRoomNameInput.trim() === activeTag) ? 0.5 : 1
+                }}
+              >
+                Rename
+              </button>
             </div>
           </div>
         </div>

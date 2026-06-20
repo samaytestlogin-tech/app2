@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-axum = { version = "0.8.9", features = ["multipart"] }
+axum = { version = "0.8.9", features = ["multipart", "macros"] }
 bcrypt = "0.16.0"
 chrono = { version = "0.4.45", features = ["serde"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }

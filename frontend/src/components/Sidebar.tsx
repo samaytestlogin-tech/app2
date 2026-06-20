@@ -21,13 +21,15 @@ import {
   Globe,
   Mail,
   Lock,
-  Key
+  Key,
+  ChevronDown
 } from 'lucide-react';
 import type { User, UserStatus, Room, StatusPermission, RoomInvitation } from '../types';
 import { socket, BACKEND_URL } from '../socket';
 
 interface SidebarProps {
   currentUser: User;
+  onUpdateCurrentUser: (user: User) => void;
   activeTab: 'chats' | 'groups' | 'spaces' | 'activity' | 'profile';
   setActiveTab: (tab: 'chats' | 'groups' | 'spaces' | 'activity' | 'profile') => void;
   rooms: Room[];
@@ -141,6 +143,7 @@ const cleanRoomName = (name: string) => {
 
 export const Sidebar: React.FC<SidebarProps> = ({
   currentUser,
+  onUpdateCurrentUser,
   activeTab,
   setActiveTab,
   rooms,
@@ -168,7 +171,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   spacePins,
   saveSpacePins,
   keepOnWall,
-  saveKeepOnWall,
+  saveKeepOnWall: _saveKeepOnWall,
   timerDurationHours,
   saveTimerDurationHours,
   warnOnMultiSpace,
@@ -178,6 +181,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
   showConfirm,
   showAlert,
 }) => {
+  const AVATAR_OPTIONS = ['🦊', '🐯', '🐼', '🐨', '🐙', '🦄', '🦖', '👽', '👻', '👾', '🦁', '🦉'];
+
+  // Profile settings state
+  const [showEditProfileModal, setShowEditProfileModal] = useState(false);
+  const [profileName, setProfileName] = useState(currentUser.username);
+  const [profileAvatar, setProfileAvatar] = useState(currentUser.avatar);
+  const [profileBio, setProfileBio] = useState(currentUser.bio || '');
+  const [profileCurrentPassword, setProfileCurrentPassword] = useState('');
+  const [profileNewPassword, setProfileNewPassword] = useState('');
+  const [profileConfirmPassword, setProfileConfirmPassword] = useState('');
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [isTimerDropdownOpen, setIsTimerDropdownOpen] = useState(false);
+  useEffect(() => {
+    setProfileName(currentUser.username);
+    setProfileAvatar(currentUser.avatar);
+    setProfileBio(currentUser.bio || '');
+    setProfileCurrentPassword('');
+    setProfileNewPassword('');
+    setProfileConfirmPassword('');
+    setProfileError(null);
+    setProfileSuccess(null);
+  }, [currentUser]);
+
   const [searchQuery, setSearchQuery] = useState('');
   const [newTag, setNewTag] = useState('');
   const [showAddTag, setShowAddTag] = useState(false);
@@ -234,6 +265,75 @@ export const Sidebar: React.FC<SidebarProps> = ({
     } catch (e) {
       console.error(e);
       showAlert('Error', 'Failed to connect to backend.');
+    }
+  };
+
+  const handleUpdateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setProfileError(null);
+    setProfileSuccess(null);
+
+    if (!profileName.trim()) {
+      setProfileError("Display Name cannot be empty.");
+      return;
+    }
+
+    if (profileNewPassword) {
+      if (!profileCurrentPassword) {
+        setProfileError("Please enter your current password to set a new password.");
+        return;
+      }
+      if (profileNewPassword !== profileConfirmPassword) {
+        setProfileError("New password and confirm password do not match.");
+        return;
+      }
+      if (profileNewPassword.length < 6) {
+        setProfileError("New password must be at least 6 characters long.");
+        return;
+      }
+    }
+
+    setProfileSaving(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/users/update-profile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tag: currentUser.tag,
+          name: profileName.trim(),
+          avatar: profileAvatar,
+          bio: profileBio.trim(),
+          current_password: profileCurrentPassword || null,
+          new_password: profileNewPassword || null,
+        }),
+      });
+
+      if (res.ok) {
+        const updatedUser = await res.json();
+        onUpdateCurrentUser({
+          tag: updatedUser.tag,
+          username: updatedUser.name,
+          avatar: updatedUser.avatar,
+          bio: updatedUser.bio,
+        });
+        setProfileSuccess("Profile updated successfully!");
+        setProfileCurrentPassword('');
+        setProfileNewPassword('');
+        setProfileConfirmPassword('');
+        setTimeout(() => {
+          setShowEditProfileModal(false);
+          setProfileSuccess(null);
+        }, 1200);
+      } else if (res.status === 401) {
+        setProfileError("Incorrect current password.");
+      } else {
+        setProfileError("Failed to update profile. Please try again.");
+      }
+    } catch (err) {
+      console.error(err);
+      setProfileError("Network error. Failed to update profile.");
+    } finally {
+      setProfileSaving(false);
     }
   };
 
@@ -494,14 +594,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  const handleToggleKeepOnWall = (chatId: string) => {
-    if (keepOnWall.includes(chatId)) {
-      saveKeepOnWall(keepOnWall.filter(id => id !== chatId));
-    } else {
-      saveKeepOnWall([...keepOnWall, chatId]);
-    }
-  };
-
   // Drag & drop handlers
   const handleDragStart = (id: string) => {
     setDraggedId(id);
@@ -594,64 +686,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  const handleEditRoom = async (roomName: string) => {
-    const newName = prompt(`Enter a new name for the group #${roomName}:`);
-    if (!newName) return;
-    const cleanNewName = newName.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '');
-    if (!cleanNewName || cleanNewName === roomName) return;
-
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/rooms/${roomName}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          new_name: cleanNewName,
-          user_tag: currentUser.tag,
-        }),
-      });
-      if (res.ok) {
-        fetchRooms();
-        if (activeTag === roomName) {
-          setActiveTag(cleanNewName);
-        }
-      } else {
-        showAlert('Rename Failed', 'Failed to rename group. You may not be authorized.');
-      }
-    } catch (err) {
-      console.error('Failed to rename group', err);
-    }
-  };
-
-  const handleDeleteRoom = async (roomName: string) => {
-    const confirmed = await showConfirm(
-      "Delete Group",
-      `Are you sure you want to delete group #${roomName}?\nAll messages inside will be permanently deleted.`,
-      "Delete",
-      "Cancel"
-    );
-    if (!confirmed) return;
-
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/rooms/${roomName}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user_tag: currentUser.tag,
-        }),
-      });
-      if (res.ok) {
-        fetchRooms();
-        if (activeTag === roomName) {
-          setActiveTag(null);
-        }
-      } else {
-        showAlert('Delete Failed', 'Failed to delete group. You may not be authorized.');
-      }
-    } catch (err) {
-      console.error('Failed to delete group', err);
-    }
-  };
-
   // Helper renderers for badges and buttons on chat rows
   const renderCountdown = (chatId: string, lastMsgTime: number) => {
     if (!showCountdown) return null;
@@ -688,36 +722,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
     );
   };
 
-  const renderChatActions = (chatId: string, isMainWall: boolean, spaceName?: string, lastMsgTime?: number) => {
+  const renderChatActions = (chatId: string, isMainWall: boolean, spaceName?: string, _lastMsgTime?: number) => {
     const isPinned = isMainWall ? mainWallPins.includes(chatId) : (spacePins[spaceName || '']?.includes(chatId) || false);
-    const isKept = keepOnWall.includes(chatId);
 
     const parts = chatId.split(':');
     const type = parts[0] as 'dm' | 'group';
     const tag = parts[1];
-    const room = type === 'group' ? rooms.find(r => r.name === tag) : null;
-    const isRoomCreator = room && room.creator_tag === currentUser.tag;
 
     return (
       <div className="chat-actions-hover" style={{ display: 'flex', gap: '6px', alignItems: 'center', marginLeft: 'auto' }} onClick={e => e.stopPropagation()}>
-        {isRoomCreator && (
-          <>
-            <button
-              className="space-action-btn"
-              onClick={() => handleEditRoom(tag)}
-              title="Rename Group"
-            >
-              <Edit3 size={13} />
-            </button>
-            <button
-              className="space-action-btn delete"
-              onClick={() => handleDeleteRoom(tag)}
-              title="Delete Group"
-            >
-              <Trash2 size={13} style={{ color: '#ff5c5c' }} />
-            </button>
-          </>
-        )}
 
         <button
           className="space-action-btn"
@@ -726,17 +739,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           {isPinned ? <PinOff size={14} style={{ color: 'var(--accent-purple)' }} /> : <Pin size={14} />}
         </button>
-
-        {isMainWall && !isPinned && lastMsgTime && lastMsgTime > 0 ? (
-          <button
-            className="space-action-btn"
-            onClick={() => handleToggleKeepOnWall(chatId)}
-            title={isKept ? "Remove from wall" : "Keep on wall permanently"}
-          >
-            <Eye size={14} style={{ color: isKept ? 'var(--accent-cyan)' : 'inherit' }} />
-          </button>
-        ) : null}
-
         <button
           className="space-action-btn"
           onClick={() => {
@@ -851,17 +853,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // ----------------------------------------------------
   // FILTERING AND SORTING FOR GROUP ROOMS
   // ----------------------------------------------------
+  const isRoomJoined = (r: Room) => {
+    const defaultNames = ['general', 'tech', 'music', 'gaming'];
+    return r.is_member === true || defaultNames.includes(r.name);
+  };
+
   const filteredRooms = rooms.filter((r) =>
     r.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const { pinnedGroups, activeGroups } = React.useMemo(() => {
+  const { pinnedGroups, activeGroups, globalGroupsMatches } = React.useMemo(() => {
     const chatId = (name: string) => `group:${name}`;
 
-    let baseList = [...filteredRooms];
+    // Base list only includes rooms that the user has joined
+    let baseList = filteredRooms.filter(isRoomJoined);
+    let globalList: typeof filteredRooms = [];
 
     if (activeGroupSpace === 'main_wall') {
-      baseList = baseList.filter(r => {
+      const mainWallMatches = baseList.filter(r => {
         const id = chatId(r.name);
         if (mainWallPins.includes(id)) return true;
         if (keepOnWall.includes(id)) return true;
@@ -872,6 +881,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
         const ageHours = (timeNow - lastMsgTime) / 3600000;
         return ageHours < timerDurationHours;
       });
+
+      // Global Matches are public rooms that match search but have NOT been joined yet
+      if (searchQuery.trim() !== '') {
+        globalList = filteredRooms.filter(r => !isRoomJoined(r) && r.visibility === 'public');
+      }
+
+      baseList = mainWallMatches;
     } else if (activeGroupSpace === 'unassigned') {
       baseList = baseList.filter(r => {
         const id = chatId(r.name);
@@ -914,8 +930,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
       return timeB - timeA;
     });
 
-    return { pinnedGroups: pinnedList, activeGroups: activeList };
-  }, [filteredRooms, activeGroupSpace, mainWallPins, spacePins, keepOnWall, spaceAssignments, roomLastMessage, timeNow, timerDurationHours]);
+    return { pinnedGroups: pinnedList, activeGroups: activeList, globalGroupsMatches: globalList };
+  }, [filteredRooms, activeGroupSpace, mainWallPins, spacePins, keepOnWall, spaceAssignments, roomLastMessage, timeNow, timerDurationHours, searchQuery]);
 
   return (
     <aside className="sidebar">
@@ -1451,6 +1467,72 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* Global Search Section for Public Groups */}
+              {activeGroupSpace === 'main_wall' && globalGroupsMatches.length > 0 && (
+                <>
+                  <div className="tag-list-label" style={{ 
+                    padding: '24px 12px 6px 12px', 
+                    color: 'var(--accent-cyan)', 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '6px',
+                    borderTop: '1px solid rgba(255, 255, 255, 0.06)',
+                    marginTop: '16px'
+                  }}>
+                    <Globe size={13} /> Global Public Groups
+                  </div>
+                  <div className="tag-items">
+                    {globalGroupsMatches.map((room) => {
+                      const initials = getChannelInitials(room.name);
+                      const grad = getChannelGradient(room.name);
+                      return (
+                        <div
+                          key={room.name}
+                          className={`tag-item ${activeTag === room.name ? 'active' : ''}`}
+                          onClick={() => setActiveTag(room.name)}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%' }}>
+                            <div className="room-avatar" style={{ 
+                              background: grad, 
+                              color: 'white', 
+                              fontWeight: 700, 
+                              fontSize: '0.85rem', 
+                              width: '36px', 
+                              height: '36px', 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              justifyContent: 'center', 
+                              borderRadius: '12px',
+                              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                              letterSpacing: '0.5px'
+                            }}>
+                              {initials}
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', width: '100%', minWidth: 0 }}>
+                                <span className="tag-title" style={{ fontWeight: 600, color: 'var(--text-main)', fontSize: '0.92rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {cleanRoomName(room.name)}
+                                </span>
+                                <span title="Public" style={{ display: 'inline-flex', alignItems: 'center' }}><Globe size={12} style={{ marginLeft: '6px', color: 'var(--accent-cyan)' }} /></span>
+                              </div>
+                              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                                <span style={{ color: 'var(--accent-cyan)', fontWeight: 500 }}>#{room.name.toLowerCase()}</span>
+                                {room.creator_tag && (
+                                  <>
+                                    <span>•</span>
+                                    <span>by @{room.creator_tag}</span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Circular Space Strip at the Bottom */}
@@ -1770,6 +1852,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div style={{ fontSize: '4.5rem', marginBottom: '12px' }}>{currentUser.avatar}</div>
               <div style={{ fontSize: '1.25rem', fontWeight: 600, color: 'white' }}>{currentUser.username}</div>
               <div style={{ fontSize: '0.85rem', color: 'var(--accent-purple)', fontWeight: 500, marginTop: '2px' }}>@{currentUser.tag}</div>
+              {currentUser.bio && (
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px', textAlign: 'center', maxWidth: '250px', fontStyle: 'italic' }}>
+                  "{currentUser.bio}"
+                </div>
+              )}
+            </div>
+
+            <div style={{ padding: '20px 16px', borderBottom: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <button
+                onClick={() => setShowEditProfileModal(true)}
+                style={{
+                  background: 'rgba(139, 92, 246, 0.1)',
+                  border: '1px solid var(--accent-purple)',
+                  color: 'white',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                  fontSize: '0.9rem',
+                  fontWeight: 600,
+                  width: '100%',
+                  padding: '12px 14px',
+                  borderRadius: '10px',
+                  transition: 'all 0.2s',
+                }}
+                className="edit-profile-btn"
+              >
+                <Edit3 size={16} />
+                Edit Profile
+              </button>
             </div>
 
             {/* Surface Timer preference */}
@@ -1777,19 +1890,77 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <label className="settings-label" style={{ fontWeight: 600, color: 'var(--accent-purple)', fontSize: '0.9rem', marginBottom: '10px' }}>
                 Main Wall Cleanup Duration
               </label>
-              <select
-                className="form-input"
-                value={isCustomTimer ? 'custom' : timerDurationHours}
-                onChange={(e) => handleTimerSelectChange(e.target.value)}
-                style={{ width: '100%', background: 'rgba(20, 15, 38, 0.8)', border: '1px solid var(--border-color)', color: 'white', padding: '10px 14px', borderRadius: '10px', outline: 'none' }}
-              >
-                <option value={1}>1 Hour (Hyper clean)</option>
-                <option value={6}>6 Hours (Frequent checks)</option>
-                <option value={24}>1 Day (Recommended default)</option>
-                <option value={72}>3 Days (Casual checks)</option>
-                <option value={168}>1 Week (Low activity)</option>
-                <option value="custom">Custom...</option>
-              </select>
+              <div style={{ position: 'relative' }}>
+                <div 
+                  onClick={() => setIsTimerDropdownOpen(!isTimerDropdownOpen)}
+                  style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'space-between',
+                    width: '100%', 
+                    background: 'rgba(20, 15, 38, 0.8)', 
+                    border: '1px solid var(--border-color)', 
+                    color: 'white', 
+                    padding: '10px 14px', 
+                    borderRadius: '10px', 
+                    cursor: 'pointer',
+                    userSelect: 'none'
+                  }}
+                >
+                  <span>
+                    {isCustomTimer ? 'Custom...' : 
+                      timerDurationHours === 1 ? '1 Hour (Hyper clean)' :
+                      timerDurationHours === 6 ? '6 Hours (Frequent checks)' :
+                      timerDurationHours === 24 ? '1 Day (Recommended default)' :
+                      timerDurationHours === 72 ? '3 Days (Casual checks)' :
+                      timerDurationHours === 168 ? '1 Week (Low activity)' : 'Custom...'}
+                  </span>
+                  <ChevronDown size={16} style={{ color: 'var(--text-muted)', transform: isTimerDropdownOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
+                </div>
+                {isTimerDropdownOpen && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '100%',
+                    left: 0,
+                    right: 0,
+                    marginTop: '8px',
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '10px',
+                    overflow: 'hidden',
+                    zIndex: 100,
+                    boxShadow: '0 10px 25px rgba(0,0,0,0.5)'
+                  }}>
+                    {[
+                      { val: 1, label: '1 Hour (Hyper clean)' },
+                      { val: 6, label: '6 Hours (Frequent checks)' },
+                      { val: 24, label: '1 Day (Recommended default)' },
+                      { val: 72, label: '3 Days (Casual checks)' },
+                      { val: 168, label: '1 Week (Low activity)' },
+                      { val: 'custom', label: 'Custom...' }
+                    ].map(option => (
+                      <div
+                        key={option.val}
+                        onClick={() => {
+                          handleTimerSelectChange(option.val.toString());
+                          setIsTimerDropdownOpen(false);
+                        }}
+                        style={{
+                          padding: '10px 14px',
+                          cursor: 'pointer',
+                          background: (isCustomTimer ? option.val === 'custom' : option.val === timerDurationHours) ? 'rgba(255,255,255,0.05)' : 'transparent',
+                          color: (isCustomTimer ? option.val === 'custom' : option.val === timerDurationHours) ? 'var(--accent-purple)' : 'var(--text-main)',
+                          transition: 'background 0.2s'
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.08)'}
+                        onMouseLeave={(e) => e.currentTarget.style.background = (isCustomTimer ? option.val === 'custom' : option.val === timerDurationHours) ? 'rgba(255,255,255,0.05)' : 'transparent'}
+                      >
+                        {option.label}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               {isCustomTimer && (
                 <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
@@ -1902,6 +2073,183 @@ export const Sidebar: React.FC<SidebarProps> = ({
         )}
 
       </div>
+
+      {/* Edit Profile Modal */}
+      {showEditProfileModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0, 0, 0, 0.7)', backdropFilter: 'blur(8px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 10000, padding: '20px' }}>
+          <div style={{ background: 'var(--glass-bg)', backdropFilter: 'blur(20px)', border: '1px solid var(--border-color)', borderRadius: '16px', width: '100%', maxWidth: '500px', maxHeight: '90vh', display: 'flex', flexDirection: 'column', boxShadow: 'var(--shadow-lg)', overflow: 'hidden' }}>
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 600, color: 'var(--accent-purple)' }}>Edit Profile</h3>
+              <button 
+                onClick={() => setShowEditProfileModal(false)}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '1.2rem' }}
+              >
+                ✕
+              </button>
+            </div>
+            
+            <form onSubmit={handleUpdateProfile} style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '20px', overflowY: 'auto' }}>
+              {profileError && (
+                <div style={{ color: '#ff5c5c', fontSize: '0.8rem', padding: '8px 12px', background: 'rgba(255, 92, 92, 0.08)', borderRadius: '8px', border: '1px solid rgba(255, 92, 92, 0.2)' }}>
+                  ⚠️ {profileError}
+                </div>
+              )}
+
+              {profileSuccess && (
+                <div style={{ color: '#2ec4b6', fontSize: '0.8rem', padding: '8px 12px', background: 'rgba(46, 196, 182, 0.08)', borderRadius: '8px', border: '1px solid rgba(46, 196, 182, 0.2)' }}>
+                  ✓ {profileSuccess}
+                </div>
+              )}
+
+              <div className="form-group">
+                <label className="form-label" style={{ marginBottom: '8px', display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Choose Avatar</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', background: 'rgba(20, 15, 38, 0.4)', padding: '10px', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+                  {AVATAR_OPTIONS.map((avatar) => (
+                    <button
+                      key={avatar}
+                      type="button"
+                      onClick={() => setProfileAvatar(avatar)}
+                      style={{
+                        fontSize: '1.5rem',
+                        background: profileAvatar === avatar ? 'rgba(139, 92, 246, 0.2)' : 'none',
+                        border: profileAvatar === avatar ? '1px solid var(--accent-purple)' : '1px solid transparent',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        padding: '4px',
+                        width: '38px',
+                        height: '38px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        transition: 'all 0.2s',
+                      }}
+                    >
+                      {avatar}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" style={{ marginBottom: '6px', display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Display Name</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={profileName}
+                  onChange={(e) => setProfileName(e.target.value)}
+                  style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', background: 'rgba(20, 15, 38, 0.8)', border: '1px solid var(--border-color)', color: 'white', outline: 'none' }}
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" style={{ marginBottom: '6px', display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Bio</label>
+                <textarea
+                  className="form-input"
+                  rows={3}
+                  value={profileBio}
+                  onChange={(e) => setProfileBio(e.target.value)}
+                  placeholder="Tell us about yourself..."
+                  style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', background: 'rgba(20, 15, 38, 0.8)', border: '1px solid var(--border-color)', color: 'white', outline: 'none', resize: 'vertical', fontFamily: 'inherit', fontSize: '0.85rem' }}
+                />
+              </div>
+
+              <div style={{ marginTop: '8px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                <h4 style={{ margin: '0 0 12px 0', fontSize: '0.9rem', fontWeight: 600, color: 'var(--accent-cyan)' }}>Security (Change Password)</h4>
+                
+                <div className="form-group" style={{ marginBottom: '12px' }}>
+                  <label className="form-label" style={{ marginBottom: '6px', display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Current Password</label>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type={showCurrentPassword ? 'text' : 'password'}
+                      className="form-input"
+                      value={profileCurrentPassword}
+                      onChange={(e) => setProfileCurrentPassword(e.target.value)}
+                      placeholder="Enter current password"
+                      style={{ width: '100%', padding: '10px 40px 10px 14px', borderRadius: '10px', background: 'rgba(20, 15, 38, 0.8)', border: '1px solid var(--border-color)', color: 'white', outline: 'none' }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                      style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      {showCurrentPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: '12px' }}>
+                  <label className="form-label" style={{ marginBottom: '6px', display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)' }}>New Password</label>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type={showNewPassword ? 'text' : 'password'}
+                      className="form-input"
+                      value={profileNewPassword}
+                      onChange={(e) => setProfileNewPassword(e.target.value)}
+                      placeholder="Minimum 6 characters"
+                      style={{ width: '100%', padding: '10px 40px 10px 14px', borderRadius: '10px', background: 'rgba(20, 15, 38, 0.8)', border: '1px solid var(--border-color)', color: 'white', outline: 'none' }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword(!showNewPassword)}
+                      style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      {showNewPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label" style={{ marginBottom: '6px', display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Confirm New Password</label>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type={showConfirmPassword ? 'text' : 'password'}
+                      className="form-input"
+                      value={profileConfirmPassword}
+                      onChange={(e) => setProfileConfirmPassword(e.target.value)}
+                      placeholder="Confirm new password"
+                      style={{ width: '100%', padding: '10px 40px 10px 14px', borderRadius: '10px', background: 'rgba(20, 15, 38, 0.8)', border: '1px solid var(--border-color)', color: 'white', outline: 'none' }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                      style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      {showConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowEditProfileModal(false)}
+                  style={{
+                    flex: 1,
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid var(--border-color)',
+                    color: 'var(--text-muted)',
+                    borderRadius: '10px',
+                    height: '38px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  disabled={profileSaving}
+                  style={{ flex: 1, height: '38px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                >
+                  {profileSaving ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Privacy Settings Modal (Statuses) */}
       {showPrivacyModal && (

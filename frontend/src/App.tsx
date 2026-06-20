@@ -5,7 +5,7 @@ import { StatusFeed } from './components/StatusFeed';
 import { CustomDialog } from './components/CustomDialog';
 import type { User, Message, DirectMessage, UserStatus, Room } from './types';
 import { socket, BACKEND_URL } from './socket';
-import { Phone, PhoneOff, Mic, MicOff } from 'lucide-react';
+import { Phone, PhoneOff, Mic, MicOff, Eye, EyeOff } from 'lucide-react';
 import { CallAudioEffects } from './utils/audioSynth';
 
 const AVATAR_OPTIONS = ['🦊', '🐯', '🐼', '🐨', '🐙', '🦄', '🦖', '👽', '👻', '👾', '🦁', '🦉'];
@@ -19,6 +19,7 @@ function App() {
   const [passwordInput, setPasswordInput] = useState('');
   const [selectedAvatar, setSelectedAvatar] = useState(AVATAR_OPTIONS[0]);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   // Layout & Channels State
   const [activeTab, setActiveTab] = useState<'chats' | 'groups' | 'spaces' | 'activity' | 'profile'>('chats');
@@ -489,16 +490,37 @@ function App() {
         initializeSocket(parsedUser);
         fetchUsers();
         fetchChattedUsers(parsedUser.tag);
+        fetchTags(parsedUser.tag);
       } else {
         localStorage.removeItem('chat_user_profile');
+        fetchTags();
       }
+    } else {
+      fetchTags();
     }
-    fetchTags();
   }, []);
 
-  const fetchTags = async () => {
+  const fetchTags = async (userTag?: string) => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/tags`);
+      let tagToUse = userTag;
+      if (!tagToUse && currentUser?.tag) {
+        tagToUse = currentUser.tag;
+      }
+      if (!tagToUse) {
+        const cached = localStorage.getItem('chat_user_profile');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed && parsed.tag) {
+            tagToUse = parsed.tag;
+          }
+        }
+      }
+
+      const url = tagToUse 
+        ? `${BACKEND_URL}/api/tags?user_tag=${encodeURIComponent(tagToUse)}`
+        : `${BACKEND_URL}/api/tags`;
+
+      const res = await fetch(url);
       if (res.ok) {
         const data: Room[] = await res.json();
         const defaultNames = ['general', 'tech', 'music', 'gaming'];
@@ -1052,6 +1074,7 @@ function App() {
           localStorage.setItem('chat_user_profile', JSON.stringify(user));
           initializeSocket(user);
           fetchUsers();
+          fetchTags(user.tag);
         } else {
           setAuthError('Signup failed. Please try again.');
         }
@@ -1081,11 +1104,13 @@ function App() {
             tag: userProfile.tag,
             username: userProfile.name,
             avatar: userProfile.avatar,
+            bio: userProfile.bio,
           };
           setCurrentUser(user);
           localStorage.setItem('chat_user_profile', JSON.stringify(user));
           initializeSocket(user);
           fetchUsers();
+          fetchTags(user.tag);
         } else {
           setAuthError('Login failed. Please try again.');
         }
@@ -1100,6 +1125,12 @@ function App() {
     setCurrentUser(null);
     socket.disconnect();
     setChattedUserTags([]);
+    fetchTags('');
+  };
+
+  const handleUpdateCurrentUser = (updatedUser: User) => {
+    setCurrentUser(updatedUser);
+    localStorage.setItem('chat_user_profile', JSON.stringify(updatedUser));
   };
 
   const handleAddTag = async (tag: string) => {
@@ -1142,14 +1173,14 @@ function App() {
             <button
               className={`nav-tab ${!isSignUp ? 'active' : ''}`}
               style={{ flex: 1, padding: '12px', background: 'none', border: 'none', cursor: 'pointer' }}
-              onClick={() => { setIsSignUp(false); setAuthError(null); }}
+              onClick={() => { setIsSignUp(false); setAuthError(null); setShowPassword(false); }}
             >
               Log In
             </button>
             <button
               className={`nav-tab ${isSignUp ? 'active' : ''}`}
               style={{ flex: 1, padding: '12px', background: 'none', border: 'none', cursor: 'pointer' }}
-              onClick={() => { setIsSignUp(true); setAuthError(null); }}
+              onClick={() => { setIsSignUp(true); setAuthError(null); setShowPassword(false); }}
             >
               Sign Up
             </button>
@@ -1213,14 +1244,47 @@ function App() {
 
             <div className="form-group">
               <label className="form-label">Password</label>
-              <input
-                type="password"
-                placeholder="••••••••"
-                className="form-input"
-                value={passwordInput}
-                onChange={(e) => setPasswordInput(e.target.value)}
-                required
-              />
+              <div style={{ position: 'relative' }}>
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="••••••••"
+                  className="form-input"
+                  style={{ paddingRight: '40px' }}
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  style={{
+                    position: 'absolute',
+                    right: '12px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: 'var(--text-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '4px',
+                    borderRadius: '4px',
+                    transition: 'color 0.2s, background-color 0.2s',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = 'var(--text-main)';
+                    e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = 'var(--text-muted)';
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                  }}
+                >
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
             </div>
 
             <button type="submit" className="btn-primary">
@@ -1239,6 +1303,7 @@ function App() {
     <div className={`app-layout ${(activeTag || activeDirectUser) ? 'chat-active' : ''}`}>
       <Sidebar
         currentUser={currentUser}
+        onUpdateCurrentUser={handleUpdateCurrentUser}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         rooms={rooms}
@@ -1293,6 +1358,7 @@ function App() {
           fetchRooms={fetchTags}
           allUsers={allUsers}
           showAlert={showAlert}
+          onSetActiveTag={setActiveTag}
         />
       ) : (
         <div className="chat-pane">
