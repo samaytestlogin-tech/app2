@@ -89,6 +89,12 @@ struct UpdateProfilePayload {
     current_password: Option<String>,
     new_password: Option<String>,
 }
+
+#[derive(Deserialize)]
+struct UpdateUserSettingsPayload {
+    user_tag: String,
+    settings: String,
+}
 #[derive(Debug, serde::Deserialize)]
 struct LoginPayload {
     tag: String,
@@ -240,6 +246,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
+                    }
+                }
+            });
+
+            // Update User Settings
+            let db_for_settings = db.clone();
+            socket.on("update_user_settings", move |_socket: SocketRef, Data(payload): Data<UpdateUserSettingsPayload>| {
+                let db = db_for_settings.clone();
+                async move {
+                    if let Err(e) = db.update_user_settings(&payload.user_tag, &payload.settings) {
+                        eprintln!("Error updating user settings: {:?}", e);
                     }
                 }
             });

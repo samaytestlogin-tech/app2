@@ -175,52 +175,79 @@ function App() {
     }
   }, [currentUser]);
 
+  const syncSettingsToCloud = () => {
+    if (!currentUser) return;
+    const tag = currentUser.tag;
+    const payload = {
+      spaces: JSON.parse(localStorage.getItem(`${tag}_spaces`) || '[]'),
+      spaceAssignments: JSON.parse(localStorage.getItem(`${tag}_space_assignments`) || '{}'),
+      mainWallPins: JSON.parse(localStorage.getItem(`${tag}_main_wall_pins`) || '[]'),
+      spacePins: JSON.parse(localStorage.getItem(`${tag}_space_pins`) || '{}'),
+      keepOnWall: JSON.parse(localStorage.getItem(`${tag}_keep_on_wall`) || '[]'),
+      timerDurationHours: Number(localStorage.getItem(`${tag}_timer_hours`) || 24),
+      warnOnMultiSpace: localStorage.getItem(`${tag}_warn_on_multi_space`) !== 'false',
+      showCountdown: localStorage.getItem(`${tag}_show_countdown`) !== 'false',
+    };
+    socket.emit('update_user_settings', {
+      user_tag: tag,
+      settings: JSON.stringify(payload)
+    });
+  };
+
   const saveSpaces = (newSpaces: string[]) => {
     if (!currentUser) return;
     setSpaces(newSpaces);
     localStorage.setItem(`${currentUser.tag}_spaces`, JSON.stringify(newSpaces));
+    syncSettingsToCloud();
   };
 
   const saveSpaceAssignments = (newAssignments: { [chatId: string]: string[] }) => {
     if (!currentUser) return;
     setSpaceAssignments(newAssignments);
     localStorage.setItem(`${currentUser.tag}_space_assignments`, JSON.stringify(newAssignments));
+    syncSettingsToCloud();
   };
 
   const saveMainWallPins = (newPins: string[]) => {
     if (!currentUser) return;
     setMainWallPins(newPins);
     localStorage.setItem(`${currentUser.tag}_main_wall_pins`, JSON.stringify(newPins));
+    syncSettingsToCloud();
   };
 
   const saveSpacePins = (newSpacePins: { [spaceName: string]: string[] }) => {
     if (!currentUser) return;
     setSpacePins(newSpacePins);
     localStorage.setItem(`${currentUser.tag}_space_pins`, JSON.stringify(newSpacePins));
+    syncSettingsToCloud();
   };
 
   const saveKeepOnWall = (newKeep: string[]) => {
     if (!currentUser) return;
     setKeepOnWall(newKeep);
     localStorage.setItem(`${currentUser.tag}_keep_on_wall`, JSON.stringify(newKeep));
+    syncSettingsToCloud();
   };
 
   const saveTimerDurationHours = (hours: number) => {
     if (!currentUser) return;
     setTimerDurationHours(hours);
     localStorage.setItem(`${currentUser.tag}_timer_hours`, String(hours));
+    syncSettingsToCloud();
   };
 
   const saveWarnOnMultiSpace = (warn: boolean) => {
     if (!currentUser) return;
     setWarnOnMultiSpace(warn);
     localStorage.setItem(`${currentUser.tag}_warn_on_multi_space`, String(warn));
+    syncSettingsToCloud();
   };
 
   const saveShowCountdown = (val: boolean) => {
     if (!currentUser) return;
     setShowCountdown(val);
     localStorage.setItem(`${currentUser.tag}_show_countdown`, String(val));
+    syncSettingsToCloud();
   };
   
   // Messages & Social Feeds
@@ -1125,7 +1152,26 @@ function App() {
             username: userProfile.name,
             avatar: userProfile.avatar,
             bio: userProfile.bio,
+            settings: userProfile.settings,
           };
+
+          // Hydrate settings from cloud
+          if (user.settings) {
+            try {
+              const cloudSettings = JSON.parse(user.settings);
+              localStorage.setItem(`${user.tag}_spaces`, JSON.stringify(cloudSettings.spaces || []));
+              localStorage.setItem(`${user.tag}_space_assignments`, JSON.stringify(cloudSettings.spaceAssignments || {}));
+              localStorage.setItem(`${user.tag}_main_wall_pins`, JSON.stringify(cloudSettings.mainWallPins || []));
+              localStorage.setItem(`${user.tag}_space_pins`, JSON.stringify(cloudSettings.spacePins || {}));
+              localStorage.setItem(`${user.tag}_keep_on_wall`, JSON.stringify(cloudSettings.keepOnWall || []));
+              if (cloudSettings.timerDurationHours) localStorage.setItem(`${user.tag}_timer_hours`, String(cloudSettings.timerDurationHours));
+              if (cloudSettings.warnOnMultiSpace !== undefined) localStorage.setItem(`${user.tag}_warn_on_multi_space`, String(cloudSettings.warnOnMultiSpace));
+              if (cloudSettings.showCountdown !== undefined) localStorage.setItem(`${user.tag}_show_countdown`, String(cloudSettings.showCountdown));
+            } catch (err) {
+              console.error("Failed to parse cloud settings", err);
+            }
+          }
+
           setCurrentUser(user);
           localStorage.setItem('chat_user_profile', JSON.stringify(user));
           initializeSocket(user);

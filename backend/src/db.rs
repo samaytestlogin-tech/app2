@@ -42,6 +42,7 @@ pub struct DbUser {
     pub name: String,
     pub avatar: String,
     pub bio: Option<String>,
+    pub settings: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -276,6 +277,7 @@ impl Db {
                 ("avatar", "string", 255),
                 ("password_hash", "string", 255),
                 ("bio", "string", 1000),
+                ("settings", "string", 10000),
             ]),
             ("rooms", "rooms", vec![
                 ("name", "string", 255),
@@ -1090,6 +1092,7 @@ impl Db {
                             name: doc["name"].as_str().unwrap_or("").to_string(),
                             avatar: doc["avatar"].as_str().unwrap_or("").to_string(),
                             bio: doc.get("bio").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                            settings: doc.get("settings").and_then(|v| v.as_str()).map(|s| s.to_string()),
                         }))
                     } else {
                         Ok(None)
@@ -1120,6 +1123,7 @@ impl Db {
                     name: d["name"].as_str().unwrap_or("").to_string(),
                     avatar: d["avatar"].as_str().unwrap_or("").to_string(),
                     bio: d.get("bio").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    settings: d.get("settings").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 });
             }
             Ok(users)
@@ -2182,6 +2186,7 @@ impl Db {
                 name: name.to_string(),
                 avatar: avatar.to_string(),
                 bio: if bio.trim().is_empty() { None } else { Some(bio.to_string()) },
+                settings: doc.get("settings").and_then(|v| v.as_str()).map(|s| s.to_string()),
             })
         })?;
 
@@ -2192,6 +2197,23 @@ impl Db {
         }
 
         Ok(res)
+    }
+
+    pub fn update_user_settings(&self, tag: &str, settings: &str) -> Result<()> {
+        run_appwrite(async {
+            let mut updated_data = serde_json::Map::new();
+            updated_data.insert("settings".to_string(), serde_json::Value::String(settings.to_string()));
+            let _ = self.update_document("users", tag, updated_data).await.map_err(map_err)?;
+            Ok(())
+        })?;
+
+        // Invalidate users cache
+        {
+            let mut cache = self.users_cache.write().unwrap();
+            *cache = None;
+        }
+
+        Ok(())
     }
 
     pub fn upload_file(&self, bytes: &[u8], filename: &str) -> Result<String> {

@@ -4,6 +4,7 @@ export interface User {
   avatar: string; // Avatar emoji
   online?: boolean;
   bio?: string;
+  settings?: string;
 }
 
 export interface Message {
