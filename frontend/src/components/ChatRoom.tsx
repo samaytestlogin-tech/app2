@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Send, Paperclip, Mic, X, Check, CheckCheck, 
+import {
+  Send, Paperclip, Mic, X, Check, CheckCheck,
   FileText, Download, Play, Pause, Volume2, Phone,
   Settings, Users, ShieldAlert,
   QrCode, UserPlus, Trash2, Pin, PinOff, Search,
-  Share2, Info, Edit3
+  Share2, Info, Edit3, Sparkles
 } from 'lucide-react';
 import type { User, Message, DirectMessage, Room, RoomMember, RoomInvitation } from '../types';
 import { socket, getUploadUrl, BACKEND_URL } from '../socket';
@@ -49,7 +49,7 @@ const getChannelGradient = (name: string) => {
   if (clean === 'music') return 'linear-gradient(135deg, #a855f7, #ec4899)'; // Purple to Pink
   if (clean === 'gaming') return 'linear-gradient(135deg, #f97316, #eab308)'; // Orange to Yellow
   if (clean === 'test_room') return 'linear-gradient(135deg, #06b6d4, #3b82f6)'; // Cyan to Blue
-  
+
   const gradients = [
     'linear-gradient(135deg, #3b82f6, #06b6d4)', // Blue-Cyan
     'linear-gradient(135deg, #10b981, #059669)', // Emerald
@@ -273,7 +273,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
       const response = await fetch(url);
       const blob = await response.blob();
       const file = new File([blob], `group_qr_${activeTag}.png`, { type: 'image/png' });
-      
+
       const shareData = {
         title: `Join our Group #${activeTag}`,
         text: `Scan this QR Code to join our group #${activeTag}!`,
@@ -514,7 +514,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   // Auto scroll to bottom and send read seen updates
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    
+
     if (activeMessages.length > 0) {
       if (isDirect && activeDirectUser) {
         socket.emit('direct_msg_seen', {
@@ -630,7 +630,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
       };
       socket.emit('send_msg', msgPayload);
     }
-    
+
     setInputText('');
   };
 
@@ -700,7 +700,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioChunksRef.current = [];
       isCancelledRef.current = false;
-      
+
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
 
@@ -760,7 +760,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
         } catch (err) {
           console.error('Audio upload failed', err);
         }
-        
+
         stream.getTracks().forEach(track => track.stop());
       };
 
@@ -818,16 +818,16 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
               {activeDirectUser.avatar}
             </div>
           ) : (
-            <div className="room-avatar" style={{ 
-              background: activeTag ? getChannelGradient(activeTag) : 'var(--bg-tertiary)', 
-              color: 'white', 
-              fontWeight: 700, 
-              fontSize: '0.9rem', 
-              width: '40px', 
-              height: '40px', 
-              display: 'flex', 
-              alignItems: 'center', 
-              justifyContent: 'center', 
+            <div className="room-avatar" style={{
+              background: activeTag ? getChannelGradient(activeTag) : 'var(--bg-tertiary)',
+              color: 'white',
+              fontWeight: 700,
+              fontSize: '0.9rem',
+              width: '40px',
+              height: '40px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
               borderRadius: '12px',
               boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
               letterSpacing: '0.5px'
@@ -849,10 +849,51 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                     </span>
                   </span>
                   {activeDirectUser.bio && (
-                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', maxWidth: '350px', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', marginTop: '2px' }} title={activeDirectUser.bio}>
-                      <Info size={11} style={{ flexShrink: 0, color: 'var(--accent)' }} />
-                      <span>{activeDirectUser.bio}</span>
-                    </span>
+                    <div
+                      style={{
+                        fontSize: '0.8rem',
+                        fontWeight: '500',
+                        color: '#fff',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        maxWidth: '400px',
+                        marginTop: '6px',
+                        padding: '6px 14px',
+                        background: 'linear-gradient(135deg, rgba(138, 43, 226, 0.15) 0%, rgba(46, 196, 182, 0.1) 100%)',
+                        border: '1px solid rgba(138, 43, 226, 0.2)',
+                        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
+                        backdropFilter: 'blur(10px)',
+                        borderRadius: '24px',
+                        width: 'fit-content',
+                        letterSpacing: '0.3px',
+                        transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+                        cursor: 'default'
+                      }}
+                      title={activeDirectUser.bio}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.transform = 'translateY(-1px)';
+                        e.currentTarget.style.boxShadow = '0 6px 16px rgba(138, 43, 226, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.1)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.transform = 'translateY(0)';
+                        e.currentTarget.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05)';
+                      }}
+                    >
+                      <Sparkles size={14} style={{ flexShrink: 0, color: 'var(--accent-cyan)' }} />
+                      <span style={{
+                        whiteSpace: 'nowrap',
+                        textOverflow: 'ellipsis',
+                        overflow: 'hidden',
+                        fontStyle: 'normal',
+                        lineHeight: '1',
+                        background: 'linear-gradient(90deg, #fff 0%, rgba(255, 255, 255, 0.8) 100%)',
+                        WebkitBackgroundClip: 'text',
+                        WebkitTextFillColor: 'transparent'
+                      }}>
+                        {activeDirectUser.bio}
+                      </span>
+                    </div>
                   )}
                 </>
               ) : (
@@ -875,8 +916,8 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
         </div>
 
         {isDirect && activeDirectUser && onStartCall && (
-          <button 
-            className="call-header-btn" 
+          <button
+            className="call-header-btn"
             onClick={() => onStartCall(activeDirectUser)}
             title={`Call ${activeDirectUser.username}`}
             style={{
@@ -898,7 +939,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
         )}
         {!isDirect && activeTag && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <button 
+            <button
               className={`call-header-btn ${showPins ? 'active' : ''}`}
               onClick={() => setShowPins(!showPins)}
               title="Pinned Messages & Files"
@@ -918,8 +959,8 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
               <Pin size={22} fill={showPins ? "var(--accent-cyan)" : "none"} />
             </button>
 
-            <button 
-              className="call-header-btn" 
+            <button
+              className="call-header-btn"
               onClick={() => {
                 if (activeRoom) {
                   setRoomVisibility(activeRoom.visibility || 'public');
@@ -964,9 +1005,9 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
               <ShieldAlert size={16} />
               <span>You are viewing a 24-hour message preview. Join this group to view complete history and participate.</span>
             </div>
-            <button 
+            <button
               onClick={handleAcceptInvite}
-              className="btn-primary" 
+              className="btn-primary"
               style={{ width: 'auto', padding: '6px 12px', fontSize: '0.8rem', height: 'auto', background: '#e64a19', border: 'none', whiteSpace: 'nowrap' }}
             >
               Join Group
@@ -984,297 +1025,297 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', width: '100%', position: 'relative' }}>
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', height: '100%', position: 'relative' }}>
           {/* Messages Feed */}
-      <div className="chat-messages">
-        {activeMessages.map((msg, index) => {
-          const isOutgoing = isDirect
-            ? (msg as DirectMessage).sender_tag === currentUser.tag
-            : (msg as Message).sender_id === currentUser.tag;
+          <div className="chat-messages">
+            {activeMessages.map((msg, index) => {
+              const isOutgoing = isDirect
+                ? (msg as DirectMessage).sender_tag === currentUser.tag
+                : (msg as Message).sender_id === currentUser.tag;
 
-          const senderName = isDirect
-            ? (isOutgoing ? currentUser.username : activeDirectUser?.username)
-            : (msg as Message).sender_name;
+              const senderName = isDirect
+                ? (isOutgoing ? currentUser.username : activeDirectUser?.username)
+                : (msg as Message).sender_name;
 
-          const timeString = new Date(msg.timestamp).toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit',
-          });
+              const timeString = new Date(msg.timestamp).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              });
 
-          // Determine if we need to show a date separator
-          const prevMsg = index > 0 ? activeMessages[index - 1] : null;
-          const showDateSeparator = !prevMsg || 
-            new Date(msg.timestamp).toDateString() !== new Date(prevMsg.timestamp).toDateString();
+              // Determine if we need to show a date separator
+              const prevMsg = index > 0 ? activeMessages[index - 1] : null;
+              const showDateSeparator = !prevMsg ||
+                new Date(msg.timestamp).toDateString() !== new Date(prevMsg.timestamp).toDateString();
 
-          return (
-            <React.Fragment key={msg.id}>
-              {showDateSeparator && (
-                <div className="date-separator">
-                  <span>{formatMessageDate(msg.timestamp)}</span>
-                </div>
-              )}
-              
-              <div
-                className={`message-row ${isOutgoing ? 'outgoing' : 'incoming'}`}
-                id={`msg-${msg.id}`}
-              >
-                {!isOutgoing && !isDirect && <div className="message-sender">{senderName}</div>}
-                
-                {isOutgoing && !isDirect && (
-                  <div className="message-actions" style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    opacity: 0,
-                    transition: 'opacity 0.2s',
-                    marginRight: '8px',
-                    alignSelf: 'center'
-                  }}>
-                    {(msg as Message).pinned ? (
-                      (userMember?.role === 'admin' || userMember?.role === 'co_admin' || userMember?.role === 'moderator' || (msg as Message).pinned_by === currentUser.tag) && (
-                        <button
-                          onClick={() => handleUnpinMessage(msg.id)}
-                          style={{
-                            background: 'rgba(255,255,255,0.05)',
-                            border: '1px solid var(--border-color)',
-                            borderRadius: '50%',
-                            width: '28px',
-                            height: '28px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            cursor: 'pointer',
-                            color: 'var(--text-main)',
-                            transition: 'all 0.2s'
-                          }}
-                          title="Unpin Message"
-                          className="hover-action-btn"
-                        >
-                          <PinOff size={14} />
-                        </button>
-                      )
-                    ) : (
-                      userMember && (
-                        <button
-                          onClick={() => handlePinMessage(msg.id)}
-                          style={{
-                            background: 'rgba(255,255,255,0.05)',
-                            border: '1px solid var(--border-color)',
-                            borderRadius: '50%',
-                            width: '28px',
-                            height: '28px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            cursor: 'pointer',
-                            color: 'var(--text-muted)',
-                            transition: 'all 0.2s'
-                          }}
-                          title="Pin Message"
-                          className="hover-action-btn"
-                        >
-                          <Pin size={14} />
-                        </button>
-                      )
-                    )}
-                  </div>
-                )}
-
-                <div className="message-bubble" style={{ position: 'relative' }}>
-                  {/* Pin badge indicator */}
-                  {!isDirect && (msg as Message).pinned && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', color: 'var(--accent-glow)', marginBottom: '4px', opacity: 0.8 }}>
-                      <Pin size={10} fill="var(--accent-glow)" />
-                      <span>Pinned by @{(msg as Message).pinned_by}</span>
+              return (
+                <React.Fragment key={msg.id}>
+                  {showDateSeparator && (
+                    <div className="date-separator">
+                      <span>{formatMessageDate(msg.timestamp)}</span>
                     </div>
                   )}
 
-                  {/* 1. Text Message */}
-                  {msg.msg_type === 'text' && <div>{msg.content}</div>}
+                  <div
+                    className={`message-row ${isOutgoing ? 'outgoing' : 'incoming'}`}
+                    id={`msg-${msg.id}`}
+                  >
+                    {!isOutgoing && !isDirect && <div className="message-sender">{senderName}</div>}
 
-                  {/* 2. Photo Message */}
-                  {msg.msg_type === 'photo' && msg.file_url && (
-                    <img
-                      src={getUploadUrl(msg.file_url)}
-                      alt="attachment"
-                      className="media-message-photo"
-                      onClick={() => setSelectedPhoto(getUploadUrl(msg.file_url))}
-                    />
-                  )}
-
-                  {/* 3. Audio Message (Voice Note) */}
-                  {msg.msg_type === 'audio' && msg.file_url && (
-                    <CustomAudioMessage url={getUploadUrl(msg.file_url)} />
-                  )}
-
-                  {/* 4. File Attachment Message */}
-                  {msg.msg_type === 'file' && msg.file_url && (
-                    <a
-                      href={getUploadUrl(msg.file_url)}
-                      download={msg.file_name}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="media-message-file"
-                    >
-                      <div className="file-icon-wrapper">
-                        <FileText size={20} />
-                      </div>
-                      <div className="file-info">
-                        <div className="file-name">{msg.file_name}</div>
-                        <div className="file-size">
-                          {msg.file_size ? `${(msg.file_size / 1024).toFixed(1)} KB` : 'Unknown size'}
-                        </div>
-                      </div>
-                      <Download size={16} style={{ color: 'var(--text-muted)', marginLeft: '8px' }} />
-                    </a>
-                  )}
-
-                  {/* Metadata & Status checkmarks */}
-                  <div className="message-meta">
-                    <span>{timeString}</span>
-                    {isOutgoing && (
-                      <span className={`message-status ${msg.status}`}>
-                        {msg.status === 'sent' && <Check className="checkmark-icon" />}
-                        {(msg.status === 'delivered' || msg.status === 'seen') && (
-                          <CheckCheck className={`checkmark-icon ${msg.status === 'seen' ? 'seen' : ''}`} />
+                    {isOutgoing && !isDirect && (
+                      <div className="message-actions" style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        opacity: 0,
+                        transition: 'opacity 0.2s',
+                        marginRight: '8px',
+                        alignSelf: 'center'
+                      }}>
+                        {(msg as Message).pinned ? (
+                          (userMember?.role === 'admin' || userMember?.role === 'co_admin' || userMember?.role === 'moderator' || (msg as Message).pinned_by === currentUser.tag) && (
+                            <button
+                              onClick={() => handleUnpinMessage(msg.id)}
+                              style={{
+                                background: 'rgba(255,255,255,0.05)',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: '50%',
+                                width: '28px',
+                                height: '28px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'pointer',
+                                color: 'var(--text-main)',
+                                transition: 'all 0.2s'
+                              }}
+                              title="Unpin Message"
+                              className="hover-action-btn"
+                            >
+                              <PinOff size={14} />
+                            </button>
+                          )
+                        ) : (
+                          userMember && (
+                            <button
+                              onClick={() => handlePinMessage(msg.id)}
+                              style={{
+                                background: 'rgba(255,255,255,0.05)',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: '50%',
+                                width: '28px',
+                                height: '28px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'pointer',
+                                color: 'var(--text-muted)',
+                                transition: 'all 0.2s'
+                              }}
+                              title="Pin Message"
+                              className="hover-action-btn"
+                            >
+                              <Pin size={14} />
+                            </button>
+                          )
                         )}
-                      </span>
+                      </div>
+                    )}
+
+                    <div className="message-bubble" style={{ position: 'relative' }}>
+                      {/* Pin badge indicator */}
+                      {!isDirect && (msg as Message).pinned && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', color: 'var(--accent-glow)', marginBottom: '4px', opacity: 0.8 }}>
+                          <Pin size={10} fill="var(--accent-glow)" />
+                          <span>Pinned by @{(msg as Message).pinned_by}</span>
+                        </div>
+                      )}
+
+                      {/* 1. Text Message */}
+                      {msg.msg_type === 'text' && <div>{msg.content}</div>}
+
+                      {/* 2. Photo Message */}
+                      {msg.msg_type === 'photo' && msg.file_url && (
+                        <img
+                          src={getUploadUrl(msg.file_url)}
+                          alt="attachment"
+                          className="media-message-photo"
+                          onClick={() => setSelectedPhoto(getUploadUrl(msg.file_url))}
+                        />
+                      )}
+
+                      {/* 3. Audio Message (Voice Note) */}
+                      {msg.msg_type === 'audio' && msg.file_url && (
+                        <CustomAudioMessage url={getUploadUrl(msg.file_url)} />
+                      )}
+
+                      {/* 4. File Attachment Message */}
+                      {msg.msg_type === 'file' && msg.file_url && (
+                        <a
+                          href={getUploadUrl(msg.file_url)}
+                          download={msg.file_name}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="media-message-file"
+                        >
+                          <div className="file-icon-wrapper">
+                            <FileText size={20} />
+                          </div>
+                          <div className="file-info">
+                            <div className="file-name">{msg.file_name}</div>
+                            <div className="file-size">
+                              {msg.file_size ? `${(msg.file_size / 1024).toFixed(1)} KB` : 'Unknown size'}
+                            </div>
+                          </div>
+                          <Download size={16} style={{ color: 'var(--text-muted)', marginLeft: '8px' }} />
+                        </a>
+                      )}
+
+                      {/* Metadata & Status checkmarks */}
+                      <div className="message-meta">
+                        <span>{timeString}</span>
+                        {isOutgoing && (
+                          <span className={`message-status ${msg.status}`}>
+                            {msg.status === 'sent' && <Check className="checkmark-icon" />}
+                            {(msg.status === 'delivered' || msg.status === 'seen') && (
+                              <CheckCheck className={`checkmark-icon ${msg.status === 'seen' ? 'seen' : ''}`} />
+                            )}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {!isOutgoing && !isDirect && (
+                      <div className="message-actions" style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        opacity: 0,
+                        transition: 'opacity 0.2s',
+                        marginLeft: '8px',
+                        alignSelf: 'center'
+                      }}>
+                        {(msg as Message).pinned ? (
+                          (userMember?.role === 'admin' || userMember?.role === 'co_admin' || userMember?.role === 'moderator' || (msg as Message).pinned_by === currentUser.tag) && (
+                            <button
+                              onClick={() => handleUnpinMessage(msg.id)}
+                              style={{
+                                background: 'rgba(255,255,255,0.05)',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: '50%',
+                                width: '28px',
+                                height: '28px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'pointer',
+                                color: 'var(--text-main)',
+                                transition: 'all 0.2s'
+                              }}
+                              title="Unpin Message"
+                              className="hover-action-btn"
+                            >
+                              <PinOff size={14} />
+                            </button>
+                          )
+                        ) : (
+                          userMember && (
+                            <button
+                              onClick={() => handlePinMessage(msg.id)}
+                              style={{
+                                background: 'rgba(255,255,255,0.05)',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: '50%',
+                                width: '28px',
+                                height: '28px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'pointer',
+                                color: 'var(--text-muted)',
+                                transition: 'all 0.2s'
+                              }}
+                              title="Pin Message"
+                              className="hover-action-btn"
+                            >
+                              <Pin size={14} />
+                            </button>
+                          )
+                        )}
+                      </div>
                     )}
                   </div>
-                </div>
-
-                {!isOutgoing && !isDirect && (
-                  <div className="message-actions" style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    opacity: 0,
-                    transition: 'opacity 0.2s',
-                    marginLeft: '8px',
-                    alignSelf: 'center'
-                  }}>
-                    {(msg as Message).pinned ? (
-                      (userMember?.role === 'admin' || userMember?.role === 'co_admin' || userMember?.role === 'moderator' || (msg as Message).pinned_by === currentUser.tag) && (
-                        <button
-                          onClick={() => handleUnpinMessage(msg.id)}
-                          style={{
-                            background: 'rgba(255,255,255,0.05)',
-                            border: '1px solid var(--border-color)',
-                            borderRadius: '50%',
-                            width: '28px',
-                            height: '28px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            cursor: 'pointer',
-                            color: 'var(--text-main)',
-                            transition: 'all 0.2s'
-                          }}
-                          title="Unpin Message"
-                          className="hover-action-btn"
-                        >
-                          <PinOff size={14} />
-                        </button>
-                      )
-                    ) : (
-                      userMember && (
-                        <button
-                          onClick={() => handlePinMessage(msg.id)}
-                          style={{
-                            background: 'rgba(255,255,255,0.05)',
-                            border: '1px solid var(--border-color)',
-                            borderRadius: '50%',
-                            width: '28px',
-                            height: '28px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            cursor: 'pointer',
-                            color: 'var(--text-muted)',
-                            transition: 'all 0.2s'
-                          }}
-                          title="Pin Message"
-                          className="hover-action-btn"
-                        >
-                          <Pin size={14} />
-                        </button>
-                      )
-                    )}
-                  </div>
-                )}
-              </div>
-            </React.Fragment>
-          );
-        })}
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Input Panel */}
-      <div className="chat-input-panel">
-        {!isDirect && !userMember ? (
-          <div style={{ textAlign: 'center', padding: '16px 0', color: 'var(--text-muted)', fontSize: '0.9rem', width: '100%' }}>
-            You must be a member to send messages to this group. Click "Join Group" above.
+                </React.Fragment>
+              );
+            })}
+            <div ref={messagesEndRef} />
           </div>
-        ) : (
-          <>
-            <input
-              type="file"
-              ref={fileInputRef}
-              style={{ display: 'none' }}
-              onChange={handleFileChange}
-            />
 
-            {isRecording ? (
-              /* Voice Recording UI */
-              <div className="recording-bar">
-                <div className="recording-timer">
-                  <div className="recording-dot"></div>
-                  <span>Recording: {formatTime(recordingTime)}</span>
-                </div>
-                <button className="recording-cancel" onClick={cancelRecording}>
-                  Cancel
-                </button>
+          {/* Input Panel */}
+          <div className="chat-input-panel">
+            {!isDirect && !userMember ? (
+              <div style={{ textAlign: 'center', padding: '16px 0', color: 'var(--text-muted)', fontSize: '0.9rem', width: '100%' }}>
+                You must be a member to send messages to this group. Click "Join Group" above.
               </div>
             ) : (
-              /* Standard Input Buttons */
-              <div className="chat-input-actions">
-                <button 
-                  className="chat-action-btn" 
-                  onClick={handleAttachmentClick}
-                  disabled={isUploading}
-                >
-                  <Paperclip size={20} />
-                </button>
-                <button className="chat-action-btn" onClick={startRecording}>
-                  <Mic size={20} />
-                </button>
-              </div>
-            )}
-
-            {/* Input Text Form */}
-            {!isRecording && (
-              <form onSubmit={handleSendText} className="chat-input-wrapper">
+              <>
                 <input
-                  type="text"
-                  placeholder={isUploading ? 'Uploading file...' : 'Type a message...'}
-                  className="chat-input"
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  disabled={isUploading}
+                  type="file"
+                  ref={fileInputRef}
+                  style={{ display: 'none' }}
+                  onChange={handleFileChange}
                 />
-                <button type="submit" className="chat-send-btn" style={{ marginLeft: '12px' }}>
-                  <Send size={18} />
-                </button>
-              </form>
-            )}
 
-            {/* Stop Voice note & Send */}
-            {isRecording && (
-              <button className="chat-send-btn" onClick={stopRecording}>
-                <Send size={18} />
-              </button>
+                {isRecording ? (
+                  /* Voice Recording UI */
+                  <div className="recording-bar">
+                    <div className="recording-timer">
+                      <div className="recording-dot"></div>
+                      <span>Recording: {formatTime(recordingTime)}</span>
+                    </div>
+                    <button className="recording-cancel" onClick={cancelRecording}>
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  /* Standard Input Buttons */
+                  <div className="chat-input-actions">
+                    <button
+                      className="chat-action-btn"
+                      onClick={handleAttachmentClick}
+                      disabled={isUploading}
+                    >
+                      <Paperclip size={20} />
+                    </button>
+                    <button className="chat-action-btn" onClick={startRecording}>
+                      <Mic size={20} />
+                    </button>
+                  </div>
+                )}
+
+                {/* Input Text Form */}
+                {!isRecording && (
+                  <form onSubmit={handleSendText} className="chat-input-wrapper">
+                    <input
+                      type="text"
+                      placeholder={isUploading ? 'Uploading file...' : 'Type a message...'}
+                      className="chat-input"
+                      value={inputText}
+                      onChange={(e) => setInputText(e.target.value)}
+                      disabled={isUploading}
+                    />
+                    <button type="submit" className="chat-send-btn" style={{ marginLeft: '12px' }}>
+                      <Send size={18} />
+                    </button>
+                  </form>
+                )}
+
+                {/* Stop Voice note & Send */}
+                {isRecording && (
+                  <button className="chat-send-btn" onClick={stopRecording}>
+                    <Send size={18} />
+                  </button>
+                )}
+              </>
             )}
-          </>
-        )}
-      </div>
+          </div>
         </div>
 
         {/* Pinned Messages Sidebar Dashboard */}
@@ -1307,7 +1348,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                   {filteredPins.length} of {pinnedMessages.length} pinned items
                 </span>
               </div>
-              <button 
+              <button
                 onClick={() => setShowPins(false)}
                 style={{
                   background: 'none',
@@ -1496,14 +1537,14 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                 </div>
               ) : (
                 filteredPins.map((msg) => {
-                  const isUserAllowedToUnpin = 
-                    userMember?.role === 'admin' || 
-                    userMember?.role === 'co_admin' || 
-                    userMember?.role === 'moderator' || 
+                  const isUserAllowedToUnpin =
+                    userMember?.role === 'admin' ||
+                    userMember?.role === 'co_admin' ||
+                    userMember?.role === 'moderator' ||
                     msg.pinned_by === currentUser.tag;
 
                   return (
-                    <div 
+                    <div
                       key={msg.id}
                       style={{
                         background: 'rgba(255, 255, 255, 0.02)',
@@ -1617,7 +1658,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
 
                       {/* Footer Actions */}
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
-                        <span 
+                        <span
                           style={{
                             fontSize: '0.75rem',
                             color: 'var(--accent-cyan)',
@@ -1629,7 +1670,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                         >
                           Click to jump
                         </span>
-                        
+
                         {isUserAllowedToUnpin && (
                           <button
                             onClick={(e) => {
@@ -1772,7 +1813,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
               <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 600, color: 'var(--accent-purple)', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Settings size={20} /> Group Settings: #{activeTag}
               </h3>
-              <button 
+              <button
                 onClick={() => setShowSettingsModal(false)}
                 style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
               >
@@ -1899,63 +1940,63 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
               const level = userMember.role === 'admin' ? 4 : userMember.role === 'co_admin' ? 3 : userMember.role === 'moderator' ? 2 : 1;
               return level >= 2;
             })() && (
-              <form onSubmit={handleSaveSettings} style={{ display: 'flex', flexDirection: 'column', gap: '12px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
-                <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)' }}>
-                  Moderation & Visibility
-                </h4>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Room Visibility</label>
-                  <select
-                    className="form-input"
-                    style={{ height: '36px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-main)', padding: '0 8px' }}
-                    value={roomVisibility}
-                    onChange={(e: any) => setRoomVisibility(e.target.value)}
-                  >
-                    <option value="public">🌐 Public (Anyone can find & join)</option>
-                    <option value="private">🔒 Private (Join via invite link / code)</option>
-                    <option value="invite_only">✉️ Invite Only (Explicit invitations only)</option>
-                  </select>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Banned Words (comma separated)</label>
-                  <textarea
-                    placeholder="slang1, slang2, promo1"
-                    className="form-input"
-                    style={{ minHeight: '60px', padding: '8px', fontSize: '0.85rem', background: 'var(--bg-secondary)' }}
-                    value={bannedWordsInput}
-                    onChange={(e) => setBannedWordsInput(e.target.value)}
-                  />
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Group Description</label>
-                  <textarea
-                    placeholder="What is this group about? Guidelines, rules, etc..."
-                    className="form-input"
-                    style={{ minHeight: '60px', padding: '8px', fontSize: '0.85rem', background: 'var(--bg-secondary)', resize: 'vertical' }}
-                    value={roomDescriptionInput}
-                    onChange={(e) => setRoomDescriptionInput(e.target.value)}
-                  />
-                </div>
-                <button type="submit" className="btn-primary" style={{ height: '36px', fontSize: '0.85rem' }}>
-                  Save Room Settings
-                </button>
-              </form>
-            )}
+                <form onSubmit={handleSaveSettings} style={{ display: 'flex', flexDirection: 'column', gap: '12px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+                  <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                    Moderation & Visibility
+                  </h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Room Visibility</label>
+                    <select
+                      className="form-input"
+                      style={{ height: '36px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-main)', padding: '0 8px' }}
+                      value={roomVisibility}
+                      onChange={(e: any) => setRoomVisibility(e.target.value)}
+                    >
+                      <option value="public">🌐 Public (Anyone can find & join)</option>
+                      <option value="private">🔒 Private (Join via invite link / code)</option>
+                      <option value="invite_only">✉️ Invite Only (Explicit invitations only)</option>
+                    </select>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Banned Words (comma separated)</label>
+                    <textarea
+                      placeholder="slang1, slang2, promo1"
+                      className="form-input"
+                      style={{ minHeight: '60px', padding: '8px', fontSize: '0.85rem', background: 'var(--bg-secondary)' }}
+                      value={bannedWordsInput}
+                      onChange={(e) => setBannedWordsInput(e.target.value)}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Group Description</label>
+                    <textarea
+                      placeholder="What is this group about? Guidelines, rules, etc..."
+                      className="form-input"
+                      style={{ minHeight: '60px', padding: '8px', fontSize: '0.85rem', background: 'var(--bg-secondary)', resize: 'vertical' }}
+                      value={roomDescriptionInput}
+                      onChange={(e) => setRoomDescriptionInput(e.target.value)}
+                    />
+                  </div>
+                  <button type="submit" className="btn-primary" style={{ height: '36px', fontSize: '0.85rem' }}>
+                    Save Room Settings
+                  </button>
+                </form>
+              )}
 
             {/* Read-Only Description for regular members */}
             {(!userMember || (() => {
               const level = userMember.role === 'admin' ? 4 : userMember.role === 'co_admin' ? 3 : userMember.role === 'moderator' ? 2 : 1;
               return level < 2;
             })()) && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
-                <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Info size={16} /> Group Description
-                </h4>
-                <div style={{ background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px', fontSize: '0.85rem', color: 'var(--text-muted)', lineHeight: '1.4', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                  {activeRoom?.description || 'No description set for this group.'}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+                  <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Info size={16} /> Group Description
+                  </h4>
+                  <div style={{ background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px', fontSize: '0.85rem', color: 'var(--text-muted)', lineHeight: '1.4', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    {activeRoom?.description || 'No description set for this group.'}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
             {/* Section 4: Group Members Button */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
@@ -2140,11 +2181,11 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
             {/* Members List */}
             <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px', paddingRight: '4px' }}>
               {(() => {
-                const filtered = members.filter(m => 
+                const filtered = members.filter(m =>
                   m.user_tag.toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
                   (m.custom_title || '').toLowerCase().includes(memberSearchQuery.toLowerCase())
                 );
-                
+
                 if (filtered.length === 0) {
                   return (
                     <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem', padding: '24px 0' }}>
@@ -2174,7 +2215,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                           {m.role.replace('_', ' ')} {m.custom_title ? `• ${m.custom_title}` : ''}
                         </span>
                       </div>
-                      
+
                       {canManage && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <select
@@ -2425,3 +2466,5 @@ const CustomAudioMessage: React.FC<{ url: string }> = ({ url }) => {
     </div>
   );
 };
+
+export default ChatRoom;

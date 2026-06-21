@@ -1030,6 +1030,26 @@ function App() {
     }
   }, [activeDirectUser, currentUser]);
 
+  // Handle history state for mobile back button
+  useEffect(() => {
+    if (activeTag || activeDirectUser) {
+      window.history.pushState({ page: 'chat' }, '', window.location.pathname);
+    }
+  }, [activeTag, activeDirectUser]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      // If the back button is pressed, the history is popped. 
+      // This means we are no longer in the chat view.
+      if (activeTag || activeDirectUser) {
+        setActiveTag(null);
+        setActiveDirectUser(null);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [activeTag, activeDirectUser]);
+
   // ----------------------------------------------------
   // Authentication Forms Submissions
   // ----------------------------------------------------
@@ -1352,7 +1372,14 @@ function App() {
           activeDirectUser={activeDirectUser}
           messages={messages}
           directMessages={directMessages}
-          onBackToSidebar={() => { setActiveTag(null); setActiveDirectUser(null); }}
+          onBackToSidebar={() => { 
+            if (window.history.state?.page === 'chat') {
+              window.history.back(); 
+            } else {
+              setActiveTag(null); 
+              setActiveDirectUser(null); 
+            }
+          }}
           onStartCall={initiateCall}
           rooms={rooms}
           fetchRooms={fetchTags}
