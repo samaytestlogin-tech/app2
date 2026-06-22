@@ -226,12 +226,22 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
       }
     };
 
+    const handleMsgDeleted = (data: { message_id: string; room_tag?: string; receiver_tag?: string; delete_type: string; user_tag: string; deleted_by_role?: string }) => {
+      if (data.delete_type === 'for_everyone') {
+        setPinnedMessages((prev) => prev.map(m => m.id === data.message_id ? { ...m, is_deleted: true, content: '', deleted_by: data.deleted_by_role } : m));
+      } else if (data.delete_type === 'for_me' && data.user_tag === currentUser.tag) {
+        setPinnedMessages((prev) => prev.filter((m) => m.id !== data.message_id));
+      }
+    };
+
     socket.on('message_pinned', handleMsgPinned);
     socket.on('message_unpinned', handleMsgUnpinned);
+    socket.on('message_deleted', handleMsgDeleted);
 
     return () => {
       socket.off('message_pinned', handleMsgPinned);
       socket.off('message_unpinned', handleMsgUnpinned);
+      socket.off('message_deleted', handleMsgDeleted);
     };
   }, [activeTag, isDirect, activeDirectUser, currentUser.tag]);
 
@@ -640,6 +650,10 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   // Filter & Sort pinned messages
   const filteredPins = pinnedMessages
     .filter(msg => {
+      // Filter out messages deleted for me
+      if (msg.deleted_for_me?.split(',').includes(currentUser.tag)) {
+        return false;
+      }
       const senderName = getPinSenderName(msg);
       const pinnerName = getPinnerName(msg);
       // 1. Search Query
@@ -1115,93 +1129,95 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                   >
                     {!isOutgoing && !isDirect && <div className="message-sender">{senderName}</div>}
 
-                    <div className="message-actions" style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      opacity: 0,
-                      transition: 'opacity 0.2s',
-                      marginRight: isOutgoing ? '8px' : '0',
-                      marginLeft: !isOutgoing ? '8px' : '0',
-                      alignSelf: 'center',
-                      order: !isOutgoing ? 1 : 0
-                    }}>
-                      {msg.pinned ? (
-                        ((!isDirect && (userMember?.role === 'admin' || userMember?.role === 'co_admin' || userMember?.role === 'moderator')) || msg.pinned_by === currentUser.tag || (isDirect && (('sender_tag' in msg && msg.sender_tag === currentUser.tag) || ('receiver_tag' in msg && msg.receiver_tag === currentUser.tag)))) && (
-                          <button
-                            onClick={() => handleUnpinMessage(msg.id)}
-                            style={{
-                              background: 'rgba(255,255,255,0.05)',
-                              border: '1px solid var(--border-color)',
-                              borderRadius: '50%',
-                              width: '28px',
-                              height: '28px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              cursor: 'pointer',
-                              color: 'var(--text-main)',
-                              transition: 'all 0.2s'
-                            }}
-                            title="Unpin Message"
-                            className="hover-action-btn"
-                          >
-                            <PinOff size={14} />
-                          </button>
-                        )
-                      ) : (
-                        ((!isDirect && userMember) || isDirect) && (
-                          <button
-                            onClick={() => handlePinMessage(msg.id)}
-                            style={{
-                              background: 'rgba(255,255,255,0.05)',
-                              border: '1px solid var(--border-color)',
-                              borderRadius: '50%',
-                              width: '28px',
-                              height: '28px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              cursor: 'pointer',
-                              color: 'var(--text-muted)',
-                              transition: 'all 0.2s'
-                            }}
-                            title="Pin Message"
-                            className="hover-action-btn"
-                          >
-                            <Pin size={14} />
-                          </button>
-                        )
-                      )}
-                      <button
-                        onClick={() => {
-                          setDeleteMsgData({
-                            id: msg.id,
-                            sender_tag: isDirect ? (msg as DirectMessage).sender_tag : (msg as Message).sender_id,
-                            room_tag: isDirect ? undefined : (msg as Message).room_tag,
-                            receiver_tag: isDirect ? (msg as DirectMessage).receiver_tag : undefined,
-                          });
-                          setShowDeleteModal(true);
-                        }}
-                        style={{
-                          background: 'rgba(255,255,255,0.05)',
-                          border: '1px solid var(--border-color)',
-                          borderRadius: '50%',
-                          width: '28px',
-                          height: '28px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          cursor: 'pointer',
-                          color: 'var(--accent-glow)',
-                          transition: 'all 0.2s'
-                        }}
-                        title="Delete Message"
-                        className="hover-action-btn"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
+                    {!msg.is_deleted && (
+                      <div className="message-actions" style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        opacity: 0,
+                        transition: 'opacity 0.2s',
+                        marginRight: isOutgoing ? '8px' : '0',
+                        marginLeft: !isOutgoing ? '8px' : '0',
+                        alignSelf: 'center',
+                        order: !isOutgoing ? 1 : 0
+                      }}>
+                        {msg.pinned ? (
+                          ((!isDirect && (userMember?.role === 'admin' || userMember?.role === 'co_admin' || userMember?.role === 'moderator')) || msg.pinned_by === currentUser.tag || (isDirect && (('sender_tag' in msg && msg.sender_tag === currentUser.tag) || ('receiver_tag' in msg && msg.receiver_tag === currentUser.tag)))) && (
+                            <button
+                              onClick={() => handleUnpinMessage(msg.id)}
+                              style={{
+                                background: 'rgba(255,255,255,0.05)',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: '50%',
+                                width: '28px',
+                                height: '28px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'pointer',
+                                color: 'var(--text-main)',
+                                transition: 'all 0.2s'
+                              }}
+                              title="Unpin Message"
+                              className="hover-action-btn"
+                            >
+                              <PinOff size={14} />
+                            </button>
+                          )
+                        ) : (
+                          ((!isDirect && userMember) || isDirect) && (
+                            <button
+                              onClick={() => handlePinMessage(msg.id)}
+                              style={{
+                                background: 'rgba(255,255,255,0.05)',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: '50%',
+                                width: '28px',
+                                height: '28px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'pointer',
+                                color: 'var(--text-muted)',
+                                transition: 'all 0.2s'
+                              }}
+                              title="Pin Message"
+                              className="hover-action-btn"
+                            >
+                              <Pin size={14} />
+                            </button>
+                          )
+                        )}
+                        <button
+                          onClick={() => {
+                            setDeleteMsgData({
+                              id: msg.id,
+                              sender_tag: isDirect ? (msg as DirectMessage).sender_tag : (msg as Message).sender_id,
+                              room_tag: isDirect ? undefined : (msg as Message).room_tag,
+                              receiver_tag: isDirect ? (msg as DirectMessage).receiver_tag : undefined,
+                            });
+                            setShowDeleteModal(true);
+                          }}
+                          style={{
+                            background: 'rgba(255,255,255,0.05)',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '50%',
+                            width: '28px',
+                            height: '28px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer',
+                            color: 'var(--accent-glow)',
+                            transition: 'all 0.2s'
+                          }}
+                          title="Delete Message"
+                          className="hover-action-btn"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    )}
 
                     <div className="message-bubble" style={{ position: 'relative' }}>
                       {/* Pin badge indicator */}
@@ -1629,67 +1645,76 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                         borderRadius: '8px',
                         borderLeft: '3px solid var(--accent-cyan)'
                       }}>
-                        {msg.msg_type === 'text' && (
-                          <div style={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>{msg.content}</div>
-                        )}
-
-                        {msg.msg_type === 'photo' && msg.file_url && (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                            <img
-                              src={getUploadUrl(msg.file_url)}
-                              alt="pinned attachment"
-                              style={{ width: '100%', maxHeight: '120px', objectFit: 'cover', borderRadius: '4px' }}
-                            />
-                            {msg.content && <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{msg.content}</div>}
+                        {msg.is_deleted ? (
+                          <div style={{ fontStyle: 'italic', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <span style={{ fontSize: '0.9rem' }}>🚫</span>
+                            {msg.deleted_by === 'admin' ? 'This message was deleted by admin' : msg.deleted_by === 'moderator' ? 'This message was deleted by moderator' : 'This message was deleted'}
                           </div>
-                        )}
+                        ) : (
+                          <>
+                            {msg.msg_type === 'text' && (
+                              <div style={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                            )}
 
-                        {msg.msg_type === 'audio' && msg.file_url && (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                              🔊 Voice Note preview
-                            </div>
-                            <audio src={getUploadUrl(msg.file_url)} controls style={{ width: '100%', height: '32px' }} onClick={(e) => e.stopPropagation()} />
-                          </div>
-                        )}
-
-                        {msg.msg_type === 'file' && msg.file_url && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <div style={{
-                              background: 'rgba(0, 168, 204, 0.1)',
-                              color: 'var(--accent-cyan)',
-                              padding: '8px',
-                              borderRadius: '6px'
-                            }}>
-                              <FileText size={18} />
-                            </div>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {msg.file_name}
+                            {msg.msg_type === 'photo' && msg.file_url && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                <img
+                                  src={getUploadUrl(msg.file_url)}
+                                  alt="pinned attachment"
+                                  style={{ width: '100%', maxHeight: '120px', objectFit: 'cover', borderRadius: '4px' }}
+                                />
+                                {msg.content && <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{msg.content}</div>}
                               </div>
-                              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                                {msg.file_size ? `${(msg.file_size / 1024).toFixed(1)} KB` : 'Unknown size'}
+                            )}
+
+                            {msg.msg_type === 'audio' && msg.file_url && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  🔊 Voice Note preview
+                                </div>
+                                <audio src={getUploadUrl(msg.file_url)} controls style={{ width: '100%', height: '32px' }} onClick={(e) => e.stopPropagation()} />
                               </div>
-                            </div>
-                            <a
-                              href={getUploadUrl(msg.file_url)}
-                              download={msg.file_name}
-                              target="_blank"
-                              rel="noreferrer"
-                              onClick={(e) => e.stopPropagation()}
-                              style={{
-                                background: 'rgba(255,255,255,0.05)',
-                                color: 'var(--text-main)',
-                                padding: '6px',
-                                borderRadius: '50%',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center'
-                              }}
-                            >
-                              <Download size={14} />
-                            </a>
-                          </div>
+                            )}
+
+                            {msg.msg_type === 'file' && msg.file_url && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                <div style={{
+                                  background: 'rgba(0, 168, 204, 0.1)',
+                                  color: 'var(--accent-cyan)',
+                                  padding: '8px',
+                                  borderRadius: '6px'
+                                }}>
+                                  <FileText size={18} />
+                                </div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {msg.file_name}
+                                  </div>
+                                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                    {msg.file_size ? `${(msg.file_size / 1024).toFixed(1)} KB` : 'Unknown size'}
+                                  </div>
+                                </div>
+                                <a
+                                  href={getUploadUrl(msg.file_url)}
+                                  download={msg.file_name}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    color: 'var(--text-main)',
+                                    padding: '6px',
+                                    borderRadius: '50%',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                  }}
+                                >
+                                  <Download size={14} />
+                                </a>
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
 

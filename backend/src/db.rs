@@ -2052,9 +2052,11 @@ impl Db {
 
             let mut is_deleted = doc["is_deleted"].as_bool().unwrap_or(false);
             let mut deleted_for_me = doc["deleted_for_me"].as_str().unwrap_or("").to_string();
+            let mut pinned = doc["pinned"].as_bool().unwrap_or(false);
 
             if for_everyone {
                 is_deleted = true;
+                pinned = false;
             } else {
                 let mut users: Vec<&str> = deleted_for_me.split(',').filter(|s| !s.is_empty()).collect();
                 if !users.contains(&user_tag) {
@@ -2067,6 +2069,7 @@ impl Db {
                 "is_deleted": is_deleted,
                 "deleted_for_me": deleted_for_me,
                 "deleted_by": deleted_by_role,
+                "pinned": pinned,
             })).await.map_err(map_err)?;
 
             Ok(())
@@ -2082,9 +2085,11 @@ impl Db {
 
             let mut is_deleted = doc["is_deleted"].as_bool().unwrap_or(false);
             let mut deleted_for_me = doc["deleted_for_me"].as_str().unwrap_or("").to_string();
+            let mut pinned = doc["pinned"].as_bool().unwrap_or(false);
 
             if for_everyone {
                 is_deleted = true;
+                pinned = false;
             } else {
                 let mut users: Vec<&str> = deleted_for_me.split(',').filter(|s| !s.is_empty()).collect();
                 if !users.contains(&user_tag) {
@@ -2097,6 +2102,7 @@ impl Db {
                 "is_deleted": is_deleted,
                 "deleted_for_me": deleted_for_me,
                 "deleted_by": deleted_by_role,
+                "pinned": pinned,
             })).await.map_err(map_err)?;
 
             Ok(())
