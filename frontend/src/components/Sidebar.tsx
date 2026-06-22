@@ -22,7 +22,8 @@ import {
   Mail,
   Lock,
   Key,
-  ChevronDown
+  ChevronDown,
+  Check
 } from 'lucide-react';
 import type { User, UserStatus, Room, StatusPermission, RoomInvitation } from '../types';
 import { socket, BACKEND_URL } from '../socket';
@@ -42,7 +43,11 @@ interface SidebarProps {
   allUsers: User[];
   activeDirectUser: User | null;
   setActiveDirectUser: (user: User | null) => void;
-  onLogout: () => void;
+  onLogout: (tag?: string) => void;
+  savedAccounts?: User[];
+  onSwitchAccount?: (tag: string) => void;
+  onAddAccount?: () => void;
+  onLogoutAll?: () => void;
   fetchRooms: () => Promise<void>;
   unreadRooms: { [roomTag: string]: number };
   unreadDirects: { [userTag: string]: number };
@@ -157,6 +162,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeDirectUser,
   setActiveDirectUser,
   onLogout,
+  savedAccounts = [],
+  onSwitchAccount,
+  onAddAccount,
+  onLogoutAll,
   fetchRooms,
   unreadRooms,
   unreadDirects,
@@ -184,6 +193,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const AVATAR_OPTIONS = ['🦊', '🐯', '🐼', '🐨', '🐙', '🦄', '🦖', '👽', '👻', '👾', '🦁', '🦉'];
 
   // Profile settings state
+  const [showAccountSwitcher, setShowAccountSwitcher] = useState(false);
   const [showEditProfileModal, setShowEditProfileModal] = useState(false);
   const [profileName, setProfileName] = useState(currentUser.username);
   const [profileAvatar, setProfileAvatar] = useState(currentUser.avatar);
@@ -936,14 +946,151 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <aside className="sidebar">
       {/* User profile header */}
-      <div className="sidebar-header">
-        <div className="user-profile">
-          <div className="user-avatar">{currentUser.avatar}</div>
-          <div className="user-info">
-            <div className="username">{currentUser.username}</div>
-            <div className="tagline">@{currentUser.tag}</div>
+      {/* User profile header */}
+      <div style={{ position: 'relative' }}>
+        <div 
+          className="sidebar-header" 
+          style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: '16px' }}
+          onClick={() => setShowAccountSwitcher(!showAccountSwitcher)}
+        >
+          <div className="user-profile">
+            <div className="user-avatar">{currentUser.avatar}</div>
+            <div className="user-info">
+              <div className="username">{currentUser.username}</div>
+              <div className="tagline">@{currentUser.tag}</div>
+            </div>
           </div>
+          <ChevronDown size={18} style={{ color: 'var(--text-muted)', transform: showAccountSwitcher ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s ease' }} />
         </div>
+
+        {/* Account Switcher Dropdown */}
+        {showAccountSwitcher && (
+          <div style={{
+            position: 'absolute',
+            top: '100%',
+            left: '12px',
+            right: '12px',
+            zIndex: 100,
+            background: 'rgba(18, 18, 24, 0.85)',
+            backdropFilter: 'blur(16px)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            borderRadius: '20px',
+            boxShadow: '0 12px 40px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255,255,255,0.05)',
+            padding: '12px',
+            marginTop: '8px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '4px',
+            overflow: 'hidden'
+          }}>
+            {savedAccounts.map(account => (
+              <div 
+                key={account.tag}
+                onClick={() => {
+                  if (onSwitchAccount && account.tag !== currentUser.tag) {
+                    onSwitchAccount(account.tag);
+                  }
+                  setShowAccountSwitcher(false);
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  padding: '10px 14px',
+                  borderRadius: '12px',
+                  cursor: account.tag === currentUser.tag ? 'default' : 'pointer',
+                  background: account.tag === currentUser.tag ? 'rgba(168, 85, 247, 0.08)' : 'transparent',
+                  border: account.tag === currentUser.tag ? '1px solid rgba(168, 85, 247, 0.2)' : '1px solid transparent',
+                  transition: 'all 0.2s ease',
+                  transform: 'scale(1)',
+                }}
+                onMouseEnter={(e) => { 
+                  if (account.tag !== currentUser.tag) {
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                    e.currentTarget.style.transform = 'scale(1.02)';
+                  }
+                }}
+                onMouseLeave={(e) => { 
+                  if (account.tag !== currentUser.tag) {
+                    e.currentTarget.style.background = 'transparent';
+                    e.currentTarget.style.transform = 'scale(1)';
+                  }
+                }}
+              >
+                <div style={{ fontSize: '1.8rem', marginRight: '14px', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))' }}>{account.avatar}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '0.95rem', fontWeight: 600, color: account.tag === currentUser.tag ? 'white' : 'rgba(255,255,255,0.9)' }}>{account.username}</div>
+                  <div style={{ fontSize: '0.8rem', color: account.tag === currentUser.tag ? 'var(--accent-purple)' : 'rgba(255,255,255,0.5)', marginTop: '2px' }}>@{account.tag}</div>
+                </div>
+                {account.tag === currentUser.tag && (
+                  <div style={{ 
+                    color: 'var(--accent-cyan)', 
+                    background: 'rgba(0, 229, 255, 0.1)', 
+                    padding: '4px', 
+                    borderRadius: '50%',
+                    display: 'flex'
+                  }}>
+                    <Check size={16} strokeWidth={3} />
+                  </div>
+                )}
+              </div>
+            ))}
+            
+            <div style={{ height: '1px', background: 'rgba(255, 255, 255, 0.06)', margin: '6px 4px' }} />
+            
+            <div 
+              onClick={() => {
+                if (onAddAccount) onAddAccount();
+                setShowAccountSwitcher(false);
+              }}
+              style={{ padding: '10px 14px', borderRadius: '12px', display: 'flex', alignItems: 'center', color: 'rgba(255,255,255,0.9)', cursor: 'pointer', transition: 'all 0.2s ease' }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                e.currentTarget.style.color = 'white';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent';
+                e.currentTarget.style.color = 'rgba(255,255,255,0.9)';
+              }}
+            >
+              <div style={{ width: '28px', height: '28px', borderRadius: '50%', border: '1px solid rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.03)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginRight: '14px' }}>
+                <Plus size={16} />
+              </div>
+              <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>Add existing account</span>
+            </div>
+            
+            <div 
+              onClick={() => {
+                if (onLogout) onLogout(currentUser.tag);
+                setShowAccountSwitcher(false);
+              }}
+              style={{ padding: '10px 14px', borderRadius: '12px', display: 'flex', alignItems: 'center', color: '#ff6b6b', cursor: 'pointer', transition: 'all 0.2s ease' }}
+              onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 107, 107, 0.1)'}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+            >
+              <div style={{ width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginRight: '14px' }}>
+                <LogOut size={18} />
+              </div>
+              <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>Log out @{currentUser.tag}</span>
+            </div>
+
+            {savedAccounts.length > 1 && (
+              <div 
+                onClick={() => {
+                  if (onLogoutAll) onLogoutAll();
+                  setShowAccountSwitcher(false);
+                }}
+                style={{ padding: '10px 14px', borderRadius: '12px', display: 'flex', alignItems: 'center', color: '#ff6b6b', cursor: 'pointer', transition: 'all 0.2s ease' }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 107, 107, 0.1)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+              >
+                <div style={{ width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginRight: '14px' }}>
+                  <Users size={18} />
+                </div>
+                <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>Log out of all accounts</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Main Sidebar Contents */}
@@ -2046,7 +2193,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {/* Logout button in Profile tab */}
             <div style={{ padding: '0 16px 24px 16px' }}>
               <button
-                onClick={onLogout}
+                onClick={() => onLogout()}
                 style={{
                   background: '#ff5c5c',
                   border: 'none',

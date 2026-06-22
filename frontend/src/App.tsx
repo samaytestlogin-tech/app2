@@ -13,6 +13,7 @@ const AVATAR_OPTIONS = ['🦊', '🐯', '🐼', '🐨', '🐙', '🦄', '🦖', 
 function App() {
   // Authentication State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [savedAccounts, setSavedAccounts] = useState<User[]>([]);
   const [isSignUp, setIsSignUp] = useState(false);
   const [usernameInput, setUsernameInput] = useState('');
   const [tagInput, setTagInput] = useState('');
@@ -509,23 +510,56 @@ function App() {
       Notification.requestPermission();
     }
 
-    const cached = localStorage.getItem('chat_user_profile');
-    if (cached) {
-      const parsedUser = JSON.parse(cached);
-      if (parsedUser && parsedUser.tag) {
-        setCurrentUser(parsedUser);
-        initializeSocket(parsedUser);
+    const saved = localStorage.getItem('chat_saved_accounts');
+    const activeTag = localStorage.getItem('chat_active_account_tag');
+    
+    if (saved) {
+      const parsedAccounts: User[] = JSON.parse(saved);
+      setSavedAccounts(parsedAccounts);
+      
+      let activeUser = parsedAccounts.find(u => u.tag === activeTag);
+      if (!activeUser && parsedAccounts.length > 0) activeUser = parsedAccounts[0];
+      
+      if (activeUser) {
+        setCurrentUser(activeUser);
+        initializeSocket(activeUser);
         fetchUsers();
-        fetchChattedUsers(parsedUser.tag);
-        fetchTags(parsedUser.tag);
+        fetchChattedUsers(activeUser.tag);
+        fetchTags(activeUser.tag);
       } else {
-        localStorage.removeItem('chat_user_profile');
         fetchTags();
       }
     } else {
+      // Backward compatibility block
+      const oldCached = localStorage.getItem('chat_user_profile');
+      if (oldCached) {
+        const parsedUser = JSON.parse(oldCached);
+        if (parsedUser && parsedUser.tag) {
+           setSavedAccounts([parsedUser]);
+           localStorage.setItem('chat_saved_accounts', JSON.stringify([parsedUser]));
+           localStorage.setItem('chat_active_account_tag', parsedUser.tag);
+           localStorage.removeItem('chat_user_profile');
+           setCurrentUser(parsedUser);
+           initializeSocket(parsedUser);
+           fetchUsers();
+           fetchChattedUsers(parsedUser.tag);
+           fetchTags(parsedUser.tag);
+           return;
+        }
+      }
       fetchTags();
     }
   }, []);
+
+  const addAccountToStorage = (newUser: User) => {
+    setSavedAccounts(prev => {
+      const updatedAccounts = prev.filter(u => u.tag !== newUser.tag);
+      updatedAccounts.push(newUser);
+      localStorage.setItem('chat_saved_accounts', JSON.stringify(updatedAccounts));
+      localStorage.setItem('chat_active_account_tag', newUser.tag);
+      return updatedAccounts;
+    });
+  };
 
   const fetchTags = async (userTag?: string) => {
     try {
@@ -734,8 +768,9 @@ function App() {
 
     // B. Group Chats Handlers
     socket.on('room_history', (history: Message[]) => {
-      setMessages(history);
-      history.forEach((msg) => {
+      const filtered = history.filter(m => !m.deleted_for_me?.split(',').includes(currentUser.tag));
+      setMessages(filtered);
+      filtered.forEach((msg) => {
         if (msg.sender_id !== currentUser.tag && msg.status !== 'seen') {
           socket.emit('msg_seen', {
             message_id: msg.id,
@@ -804,17 +839,42 @@ function App() {
       }
     });
 
-    socket.on('message_pinned', (pinnedMsg: Message) => {
-      setMessages((prev) => prev.map(m => m.id === pinnedMsg.id ? pinnedMsg : m));
+    socket.on('message_pinned', (pinnedMsg: Message | DirectMessage) => {
+      if ('room_tag' in pinnedMsg) {
+        setMessages((prev) => prev.map(m => m.id === pinnedMsg.id ? pinnedMsg as Message : m));
+      } else if ('receiver_tag' in pinnedMsg) {
+        setDirectMessages((prev) => prev.map(m => m.id === pinnedMsg.id ? pinnedMsg as DirectMessage : m));
+      }
     });
 
-    socket.on('message_unpinned', (data: { message_id: string; room_tag: string }) => {
-      setMessages((prev) => prev.map(m => m.id === data.message_id ? { ...m, pinned: false, pinned_by: undefined, pinned_at: undefined } : m));
+    socket.on('message_unpinned', (data: { message_id: string; room_tag?: string; receiver_tag?: string }) => {
+      if (data.room_tag) {
+        setMessages((prev) => prev.map(m => m.id === data.message_id ? { ...m, pinned: false, pinned_by: undefined, pinned_at: undefined } : m));
+      } else if (data.receiver_tag) {
+        setDirectMessages((prev) => prev.map(m => m.id === data.message_id ? { ...m, pinned: false, pinned_by: undefined, pinned_at: undefined } : m));
+      }
+    });
+
+    socket.on('message_deleted', (data: { message_id: string; room_tag?: string; receiver_tag?: string; delete_type: string; user_tag: string; deleted_by_role?: string }) => {
+      if (data.delete_type === 'for_everyone') {
+        if (data.room_tag) {
+          setMessages((prev) => prev.map(m => m.id === data.message_id ? { ...m, is_deleted: true, content: '', deleted_by: data.deleted_by_role } : m));
+        } else if (data.receiver_tag) {
+          setDirectMessages((prev) => prev.map(m => m.id === data.message_id ? { ...m, is_deleted: true, content: '', deleted_by: data.deleted_by_role } : m));
+        }
+      } else if (data.delete_type === 'for_me' && data.user_tag === currentUser.tag) {
+        if (data.room_tag) {
+          setMessages((prev) => prev.filter(m => m.id !== data.message_id));
+        } else if (data.receiver_tag) {
+          setDirectMessages((prev) => prev.filter(m => m.id !== data.message_id));
+        }
+      }
     });
 
     // C. Direct Chats Handlers
     socket.on('direct_history', (history: DirectMessage[]) => {
-      setDirectMessages(history);
+      const filtered = history.filter(m => !m.deleted_for_me?.split(',').includes(currentUser.tag));
+      setDirectMessages(filtered);
       
       // Mark received DMs as seen
       if (activeDirectUser) {
@@ -1118,7 +1178,7 @@ function App() {
             avatar: selectedAvatar,
           };
           setCurrentUser(user);
-          localStorage.setItem('chat_user_profile', JSON.stringify(user));
+          addAccountToStorage(user);
           initializeSocket(user);
           fetchUsers();
           fetchTags(user.tag);
@@ -1173,7 +1233,7 @@ function App() {
           }
 
           setCurrentUser(user);
-          localStorage.setItem('chat_user_profile', JSON.stringify(user));
+          addAccountToStorage(user);
           initializeSocket(user);
           fetchUsers();
           fetchTags(user.tag);
@@ -1186,8 +1246,57 @@ function App() {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('chat_user_profile');
+  const handleSwitchAccount = (tag: string) => {
+    const user = savedAccounts.find(u => u.tag === tag);
+    if (user) {
+      localStorage.setItem('chat_active_account_tag', user.tag);
+      setCurrentUser(user);
+      socket.disconnect(); 
+      initializeSocket(user);
+      setChattedUserTags([]);
+      fetchUsers();
+      fetchChattedUsers(user.tag);
+      fetchTags(user.tag);
+      setActiveTag(null);
+      setActiveDirectUser(null);
+    }
+  };
+
+  const handleAddAccount = () => {
+    setCurrentUser(null);
+    socket.disconnect();
+    setChattedUserTags([]);
+    setActiveTag(null);
+    setActiveDirectUser(null);
+  };
+
+  const handleLogout = (tagToLogout?: string) => {
+    const targetTag = tagToLogout || currentUser?.tag;
+    if (!targetTag) return;
+    
+    setSavedAccounts(prev => {
+      const updatedAccounts = prev.filter(u => u.tag !== targetTag);
+      localStorage.setItem('chat_saved_accounts', JSON.stringify(updatedAccounts));
+      
+      if (currentUser?.tag === targetTag) {
+        if (updatedAccounts.length > 0) {
+          handleSwitchAccount(updatedAccounts[0].tag);
+        } else {
+          localStorage.removeItem('chat_active_account_tag');
+          setCurrentUser(null);
+          socket.disconnect();
+          setChattedUserTags([]);
+          fetchTags('');
+        }
+      }
+      return updatedAccounts;
+    });
+  };
+
+  const handleLogoutAll = () => {
+    localStorage.removeItem('chat_saved_accounts');
+    localStorage.removeItem('chat_active_account_tag');
+    setSavedAccounts([]);
     setCurrentUser(null);
     socket.disconnect();
     setChattedUserTags([]);
@@ -1196,7 +1305,11 @@ function App() {
 
   const handleUpdateCurrentUser = (updatedUser: User) => {
     setCurrentUser(updatedUser);
-    localStorage.setItem('chat_user_profile', JSON.stringify(updatedUser));
+    setSavedAccounts(prev => {
+      const updatedAccounts = prev.map(u => u.tag === updatedUser.tag ? updatedUser : u);
+      localStorage.setItem('chat_saved_accounts', JSON.stringify(updatedAccounts));
+      return updatedAccounts;
+    });
   };
 
   const handleAddTag = async (tag: string) => {
@@ -1386,6 +1499,10 @@ function App() {
         activeDirectUser={activeDirectUser}
         setActiveDirectUser={(user) => { setActiveDirectUser(user); setActiveTag(null); }}
         onLogout={handleLogout}
+        savedAccounts={savedAccounts}
+        onSwitchAccount={handleSwitchAccount}
+        onAddAccount={handleAddAccount}
+        onLogoutAll={handleLogoutAll}
         fetchRooms={fetchTags}
         unreadRooms={unreadRooms}
         unreadDirects={unreadDirects}

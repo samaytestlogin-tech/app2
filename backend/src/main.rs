@@ -57,8 +57,18 @@ struct MsgSeenPayload {
 #[derive(Debug, serde::Deserialize, Clone)]
 struct PinMessagePayload {
     message_id: String,
-    room_tag: String,
+    room_tag: Option<String>,
+    receiver_tag: Option<String>,
     user_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, Clone)]
+struct DeleteMessagePayload {
+    message_id: String,
+    room_tag: Option<String>,
+    receiver_tag: Option<String>,
+    delete_type: String, // "for_me" or "for_everyone"
+    user_tag: String,
 }
 
 #[derive(Debug, serde::Deserialize, Clone)]
@@ -90,7 +100,7 @@ struct UpdateProfilePayload {
     new_password: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct UpdateUserSettingsPayload {
     user_tag: String,
     settings: String,
@@ -324,6 +334,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         pinned: None,
                         pinned_by: None,
                         pinned_at: None,
+                        is_deleted: None,
+                        deleted_for_me: None,
+                    deleted_by: None,
                     };
 
                     match db.insert_message(&msg) {
@@ -429,6 +442,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         file_size: payload.file_size,
                         timestamp: chrono::Utc::now().timestamp_millis(),
                         status: "sent".to_string(),
+                        is_deleted: None,
+                        deleted_for_me: None,
+                    deleted_by: None,
+                    pinned: None,
+                    pinned_by: None,
+                    pinned_at: None,
                     };
 
                     // Check if receiver is online
@@ -701,14 +720,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             socket.on("pin_message", move |socket: SocketRef, Data(payload): Data<PinMessagePayload>| {
                 let db = db_for_pin.clone();
                 async move {
-                    if let Ok(true) = db.is_room_member(&payload.room_tag, &payload.user_id) {
-                        match db.pin_message(&payload.message_id, &payload.user_id) {
+                    if let Some(room_tag) = &payload.room_tag {
+                        if let Ok(true) = db.is_room_member(room_tag, &payload.user_id) {
+                            match db.pin_message(&payload.message_id, &payload.user_id) {
+                                Ok(Some(msg)) => {
+                                    let _ = socket.to(room_tag.clone()).emit("message_pinned", &msg).await;
+                                    let _ = socket.emit("message_pinned", &msg).ok();
+                                }
+                                other => {
+                                    eprintln!("Error pinning message {}: {:?}", payload.message_id, other);
+                                }
+                            }
+                        }
+                    } else if let Some(receiver_tag) = &payload.receiver_tag {
+                        match db.pin_direct_message(&payload.message_id, &payload.user_id) {
                             Ok(Some(msg)) => {
-                                let _ = socket.to(payload.room_tag.clone()).emit("message_pinned", &msg).await;
+                                let _ = socket.to(receiver_tag.clone()).emit("message_pinned", &msg).await;
                                 let _ = socket.emit("message_pinned", &msg).ok();
                             }
                             other => {
-                                eprintln!("Error pinning message {}: {:?}", payload.message_id, other);
+                                eprintln!("Error pinning direct message {}: {:?}", payload.message_id, other);
                             }
                         }
                     }
@@ -719,37 +750,133 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             socket.on("unpin_message", move |socket: SocketRef, Data(payload): Data<PinMessagePayload>| {
                 let db = db_for_unpin.clone();
                 async move {
-                    if let Ok(true) = db.is_room_member(&payload.room_tag, &payload.user_id) {
+                    if let Some(room_tag) = &payload.room_tag {
+                        if let Ok(true) = db.is_room_member(room_tag, &payload.user_id) {
+                            let mut allowed = false;
+                            if let Ok(req_lvl) = db.get_member_role_level(room_tag, &payload.user_id) {
+                                if req_lvl >= 2 {
+                                    allowed = true;
+                                }
+                            }
+
+                            if !allowed {
+                                if let Ok(Some(msg)) = db.get_message_by_id(&payload.message_id) {
+                                    if let Some(pinned_by) = msg.pinned_by {
+                                        if pinned_by == payload.user_id {
+                                            allowed = true;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if allowed {
+                                match db.unpin_message(&payload.message_id) {
+                                    Ok(Some(_msg)) => {
+                                        let payload_out = serde_json::json!({
+                                            "message_id": payload.message_id,
+                                            "room_tag": room_tag
+                                        });
+                                        let _ = socket.to(room_tag.clone()).emit("message_unpinned", &payload_out).await;
+                                        let _ = socket.emit("message_unpinned", &payload_out).ok();
+                                    }
+                                    other => {
+                                        eprintln!("Error unpinning message {}: {:?}", payload.message_id, other);
+                                    }
+                                }
+                            }
+                        }
+                    } else if let Some(receiver_tag) = &payload.receiver_tag {
                         let mut allowed = false;
-                        if let Ok(req_lvl) = db.get_member_role_level(&payload.room_tag, &payload.user_id) {
-                            if req_lvl >= 2 {
+                        if let Ok(Some(msg)) = db.get_direct_message_by_id(&payload.message_id) {
+                            if msg.sender_tag == payload.user_id || msg.receiver_tag == payload.user_id {
                                 allowed = true;
                             }
                         }
+                        
+                        if allowed {
+                            match db.unpin_direct_message(&payload.message_id) {
+                                Ok(Some(_msg)) => {
+                                    let payload_out = serde_json::json!({
+                                        "message_id": payload.message_id,
+                                        "receiver_tag": receiver_tag
+                                    });
+                                    let _ = socket.to(receiver_tag.clone()).emit("message_unpinned", &payload_out).await;
+                                    let _ = socket.emit("message_unpinned", &payload_out).ok();
+                                }
+                                other => {
+                                    eprintln!("Error unpinning direct message {}: {:?}", payload.message_id, other);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
 
-                        if !allowed {
-                            if let Ok(Some(msg)) = db.get_message_by_id(&payload.message_id) {
-                                if let Some(pinned_by) = msg.pinned_by {
-                                    if pinned_by == payload.user_id {
-                                        allowed = true;
-                                    }
+            let db_for_delete = db.clone();
+            socket.on("delete_message", move |socket: SocketRef, Data(payload): Data<DeleteMessagePayload>| {
+                let db = db_for_delete.clone();
+                async move {
+                    let for_everyone = payload.delete_type == "for_everyone";
+                    let mut allowed = false;
+                    let mut deleted_by_role: Option<String> = None;
+
+                    if let Some(room_tag) = &payload.room_tag {
+                        if !for_everyone {
+                            allowed = true;
+                        } else if let Ok(Some(msg)) = db.get_message_by_id(&payload.message_id) {
+                            if msg.sender_id == payload.user_tag {
+                                allowed = true;
+                            } else if let Ok(req_lvl) = db.get_member_role_level(room_tag, &payload.user_tag) {
+                                if req_lvl >= 2 {
+                                    allowed = true;
+                                    deleted_by_role = match req_lvl {
+                                        4 | 3 => Some("admin".to_string()),
+                                        2 => Some("moderator".to_string()),
+                                        _ => None,
+                                    };
                                 }
                             }
                         }
 
                         if allowed {
-                            match db.unpin_message(&payload.message_id) {
-                                Ok(Some(_msg)) => {
-                                    let payload_out = serde_json::json!({
-                                        "message_id": payload.message_id,
-                                        "room_tag": payload.room_tag
-                                    });
-                                    let _ = socket.to(payload.room_tag.clone()).emit("message_unpinned", &payload_out).await;
-                                    let _ = socket.emit("message_unpinned", &payload_out).ok();
+                            if let Ok(_) = db.delete_message(&payload.message_id, &payload.user_tag, for_everyone, deleted_by_role.clone()) {
+                                let payload_out = serde_json::json!({
+                                    "message_id": payload.message_id,
+                                    "room_tag": room_tag,
+                                    "delete_type": payload.delete_type,
+                                    "user_tag": payload.user_tag,
+                                    "deleted_by_role": deleted_by_role,
+                                });
+                                
+                                if for_everyone {
+                                    let _ = socket.to(room_tag.clone()).emit("message_deleted", &payload_out).await;
                                 }
-                                other => {
-                                    eprintln!("Error unpinning message {}: {:?}", payload.message_id, other);
+                                let _ = socket.emit("message_deleted", &payload_out).ok();
+                            }
+                        }
+                    } else if let Some(receiver_tag) = &payload.receiver_tag {
+                        if !for_everyone {
+                            allowed = true;
+                        } else if let Ok(Some(msg)) = db.get_direct_message_by_id(&payload.message_id) {
+                            if msg.sender_tag == payload.user_tag {
+                                allowed = true;
+                            }
+                        }
+
+                        if allowed {
+                            if let Ok(_) = db.delete_direct_message(&payload.message_id, &payload.user_tag, for_everyone, None) {
+                                let payload_out = serde_json::json!({
+                                    "message_id": payload.message_id,
+                                    "receiver_tag": receiver_tag,
+                                    "delete_type": payload.delete_type,
+                                    "user_tag": payload.user_tag
+                                });
+                                
+                                if for_everyone {
+                                    let _ = socket.to(receiver_tag.clone()).emit("message_deleted", &payload_out).await;
+                                    let _ = socket.to(payload.user_tag.clone()).emit("message_deleted", &payload_out).await;
                                 }
+                                let _ = socket.emit("message_deleted", &payload_out).ok();
                             }
                         }
                     }
@@ -792,6 +919,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/rooms/{room_tag}/join_public", post(join_public_room_route))
         .route("/api/rooms/{room_tag}/settings", put(update_room_settings_route))
         .route("/api/rooms/{room_tag}/pins", get(get_pinned_messages_route))
+        .route("/api/dms/{target_tag}/pins", get(get_pinned_direct_messages_route))
         .route("/api/statuses/{id}", delete(delete_status_route))
         .route("/api/status-permissions", post(set_permission_route).get(get_permissions_route))
         .route("/api/status-permissions/check", get(check_permission_route))
@@ -1325,5 +1453,17 @@ async fn get_pinned_messages_route(
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
+async fn get_pinned_direct_messages_route(
+    State(state): State<AppState>,
+    Path(target_tag): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<db::DirectMessage>>, StatusCode> {
+    let user_tag = headers.get("X-User-Tag")
+        .and_then(|h| h.to_str().ok())
+        .ok_or(StatusCode::BAD_REQUEST)?;
 
-
+    match state.db.get_pinned_direct_messages(user_tag, &target_tag) {
+        Ok(msgs) => Ok(Json(msgs)),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}

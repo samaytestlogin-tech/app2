@@ -22,6 +22,9 @@ pub struct Message {
     pub pinned: Option<bool>,
     pub pinned_by: Option<String>,
     pub pinned_at: Option<i64>,
+    pub is_deleted: Option<bool>,
+    pub deleted_for_me: Option<String>,
+    pub deleted_by: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -57,6 +60,12 @@ pub struct DirectMessage {
     pub file_size: Option<i64>,
     pub timestamp: i64,
     pub status: String, // "sent" | "delivered" | "seen"
+    pub is_deleted: Option<bool>,
+    pub deleted_for_me: Option<String>,
+    pub deleted_by: Option<String>,
+    pub pinned: Option<bool>,
+    pub pinned_by: Option<String>,
+    pub pinned_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -315,6 +324,9 @@ impl Db {
                 ("pinned", "boolean", 0),
                 ("pinned_by", "string", 255),
                 ("pinned_at", "integer", 0),
+                ("is_deleted", "boolean", 0),
+                ("deleted_for_me", "string", 1000),
+                ("deleted_by", "string", 50),
             ]),
             ("direct_messages", "direct_messages", vec![
                 ("id", "string", 255),
@@ -327,6 +339,12 @@ impl Db {
                 ("file_size", "integer", 0),
                 ("timestamp", "integer", 0),
                 ("status", "string", 50),
+                ("is_deleted", "boolean", 0),
+                ("deleted_for_me", "string", 1000),
+                ("deleted_by", "string", 50),
+                ("pinned", "boolean", 0),
+                ("pinned_by", "string", 50),
+                ("pinned_at", "integer", 0),
             ]),
             ("statuses", "statuses", vec![
                 ("id", "string", 255),
@@ -880,6 +898,9 @@ impl Db {
                     pinned: d["pinned"].as_bool(),
                     pinned_by: d["pinned_by"].as_str().map(|s| s.to_string()),
                     pinned_at: d["pinned_at"].as_i64(),
+                is_deleted: d["is_deleted"].as_bool(),
+                deleted_for_me: d["deleted_for_me"].as_str().map(|s| s.to_string()),
+            deleted_by: d["deleted_by"].as_str().map(|s| s.to_string()),
                 });
             }
             messages.reverse();
@@ -943,6 +964,9 @@ impl Db {
                     pinned: d["pinned"].as_bool(),
                     pinned_by: d["pinned_by"].as_str().map(|s| s.to_string()),
                     pinned_at: d["pinned_at"].as_i64(),
+                is_deleted: d["is_deleted"].as_bool(),
+                deleted_for_me: d["deleted_for_me"].as_str().map(|s| s.to_string()),
+            deleted_by: d["deleted_by"].as_str().map(|s| s.to_string()),
                 });
             }
             messages.reverse();
@@ -995,7 +1019,10 @@ impl Db {
                         pinned: d["pinned"].as_bool(),
                         pinned_by: d["pinned_by"].as_str().map(|s| s.to_string()),
                         pinned_at: d["pinned_at"].as_i64(),
-                    });
+                    is_deleted: d["is_deleted"].as_bool(),
+                deleted_for_me: d["deleted_for_me"].as_str().map(|s| s.to_string()),
+            deleted_by: d["deleted_by"].as_str().map(|s| s.to_string()),
+                });
                 }
             }
             Ok(updated)
@@ -1193,6 +1220,12 @@ impl Db {
                     file_size: d["file_size"].as_i64(),
                     timestamp: d["timestamp"].as_i64().unwrap_or(0),
                     status: d["status"].as_str().unwrap_or("").to_string(),
+                is_deleted: d["is_deleted"].as_bool(),
+                    deleted_for_me: d["deleted_for_me"].as_str().map(|s| s.to_string()),
+                deleted_by: d["deleted_by"].as_str().map(|s| s.to_string()),
+                pinned: d["pinned"].as_bool(),
+                pinned_by: d["pinned_by"].as_str().map(|s| s.to_string()),
+                pinned_at: d["pinned_at"].as_i64(),
                 });
             }
 
@@ -1238,6 +1271,12 @@ impl Db {
                     file_size: d["file_size"].as_i64(),
                     timestamp: d["timestamp"].as_i64().unwrap_or(0),
                     status: "delivered".to_string(),
+                    is_deleted: d["is_deleted"].as_bool(),
+                    deleted_for_me: d["deleted_for_me"].as_str().map(|s| s.to_string()),
+                deleted_by: d["deleted_by"].as_str().map(|s| s.to_string()),
+                pinned: d["pinned"].as_bool(),
+                pinned_by: d["pinned_by"].as_str().map(|s| s.to_string()),
+                pinned_at: d["pinned_at"].as_i64(),
                 });
             }
             Ok(updated)
@@ -1769,7 +1808,38 @@ impl Db {
                 pinned: doc["pinned"].as_bool(),
                 pinned_by: doc["pinned_by"].as_str().map(|s| s.to_string()),
                 pinned_at: doc["pinned_at"].as_i64(),
-            }))
+            is_deleted: doc["is_deleted"].as_bool(),
+                deleted_for_me: doc["deleted_for_me"].as_str().map(|s| s.to_string()),
+            deleted_by: doc["deleted_by"].as_str().map(|s| s.to_string()),
+                }))
+        })
+    }
+
+    pub fn get_direct_message_by_id(&self, message_id: &str) -> Result<Option<DirectMessage>> {
+        run_appwrite(async {
+            let doc = match self.get_document("direct_messages", message_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(None),
+            };
+
+            Ok(Some(DirectMessage {
+                id: doc["id"].as_str().unwrap_or("").to_string(),
+                sender_tag: doc["sender_tag"].as_str().unwrap_or("").to_string(),
+                receiver_tag: doc["receiver_tag"].as_str().unwrap_or("").to_string(),
+                msg_type: doc["msg_type"].as_str().unwrap_or("").to_string(),
+                content: doc["content"].as_str().unwrap_or("").to_string(),
+                file_url: doc["file_url"].as_str().map(|s| s.to_string()),
+                file_name: doc["file_name"].as_str().map(|s| s.to_string()),
+                file_size: doc["file_size"].as_i64(),
+                timestamp: doc["timestamp"].as_i64().unwrap_or(0),
+                status: doc["status"].as_str().unwrap_or("").to_string(),
+                is_deleted: doc["is_deleted"].as_bool(),
+                deleted_for_me: doc["deleted_for_me"].as_str().map(|s| s.to_string()),
+            deleted_by: doc["deleted_by"].as_str().map(|s| s.to_string()),
+            pinned: doc["pinned"].as_bool(),
+            pinned_by: doc["pinned_by"].as_str().map(|s| s.to_string()),
+            pinned_at: doc["pinned_at"].as_i64(),
+                }))
         })
     }
 
@@ -1808,7 +1878,10 @@ impl Db {
                 pinned: updated_doc["pinned"].as_bool(),
                 pinned_by: updated_doc["pinned_by"].as_str().map(|s| s.to_string()),
                 pinned_at: updated_doc["pinned_at"].as_i64(),
-            }))
+            is_deleted: updated_doc["is_deleted"].as_bool(),
+                deleted_for_me: updated_doc["deleted_for_me"].as_str().map(|s| s.to_string()),
+            deleted_by: updated_doc["deleted_by"].as_str().map(|s| s.to_string()),
+                }))
         })
     }
 
@@ -1846,7 +1919,187 @@ impl Db {
                 pinned: updated_doc["pinned"].as_bool(),
                 pinned_by: updated_doc["pinned_by"].as_str().map(|s| s.to_string()),
                 pinned_at: updated_doc["pinned_at"].as_i64(),
+            is_deleted: updated_doc["is_deleted"].as_bool(),
+                deleted_for_me: updated_doc["deleted_for_me"].as_str().map(|s| s.to_string()),
+            deleted_by: updated_doc["deleted_by"].as_str().map(|s| s.to_string()),
+                }))
+        })
+    }
+
+    pub fn pin_direct_message(&self, message_id: &str, pinned_by: &str) -> Result<Option<DirectMessage>> {
+        run_appwrite(async {
+            let _doc = match self.get_document("direct_messages", message_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(None),
+            };
+
+            let pinned_at = chrono::Utc::now().timestamp_millis();
+            self.update_document("direct_messages", message_id, json!({
+                "pinned": true,
+                "pinned_by": pinned_by,
+                "pinned_at": pinned_at
+            })).await.map_err(map_err)?;
+
+            let updated_doc = match self.get_document("direct_messages", message_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(None),
+            };
+
+            Ok(Some(DirectMessage {
+                id: updated_doc["id"].as_str().unwrap_or("").to_string(),
+                sender_tag: updated_doc["sender_tag"].as_str().unwrap_or("").to_string(),
+                receiver_tag: updated_doc["receiver_tag"].as_str().unwrap_or("").to_string(),
+                msg_type: updated_doc["msg_type"].as_str().unwrap_or("").to_string(),
+                content: updated_doc["content"].as_str().unwrap_or("").to_string(),
+                file_url: updated_doc["file_url"].as_str().map(|s| s.to_string()),
+                file_name: updated_doc["file_name"].as_str().map(|s| s.to_string()),
+                file_size: updated_doc["file_size"].as_i64(),
+                timestamp: updated_doc["timestamp"].as_i64().unwrap_or(0),
+                status: updated_doc["status"].as_str().unwrap_or("").to_string(),
+                is_deleted: updated_doc["is_deleted"].as_bool(),
+                deleted_for_me: updated_doc["deleted_for_me"].as_str().map(|s| s.to_string()),
+                deleted_by: updated_doc["deleted_by"].as_str().map(|s| s.to_string()),
+                pinned: updated_doc["pinned"].as_bool(),
+                pinned_by: updated_doc["pinned_by"].as_str().map(|s| s.to_string()),
+                pinned_at: updated_doc["pinned_at"].as_i64(),
             }))
+        })
+    }
+
+    pub fn unpin_direct_message(&self, message_id: &str) -> Result<Option<DirectMessage>> {
+        run_appwrite(async {
+            let _doc = match self.get_document("direct_messages", message_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(None),
+            };
+
+            self.update_document("direct_messages", message_id, json!({
+                "pinned": false,
+                "pinned_by": "",
+                "pinned_at": 0
+            })).await.map_err(map_err)?;
+
+            let updated_doc = match self.get_document("direct_messages", message_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(None),
+            };
+
+            Ok(Some(DirectMessage {
+                id: updated_doc["id"].as_str().unwrap_or("").to_string(),
+                sender_tag: updated_doc["sender_tag"].as_str().unwrap_or("").to_string(),
+                receiver_tag: updated_doc["receiver_tag"].as_str().unwrap_or("").to_string(),
+                msg_type: updated_doc["msg_type"].as_str().unwrap_or("").to_string(),
+                content: updated_doc["content"].as_str().unwrap_or("").to_string(),
+                file_url: updated_doc["file_url"].as_str().map(|s| s.to_string()),
+                file_name: updated_doc["file_name"].as_str().map(|s| s.to_string()),
+                file_size: updated_doc["file_size"].as_i64(),
+                timestamp: updated_doc["timestamp"].as_i64().unwrap_or(0),
+                status: updated_doc["status"].as_str().unwrap_or("").to_string(),
+                is_deleted: updated_doc["is_deleted"].as_bool(),
+                deleted_for_me: updated_doc["deleted_for_me"].as_str().map(|s| s.to_string()),
+                deleted_by: updated_doc["deleted_by"].as_str().map(|s| s.to_string()),
+                pinned: updated_doc["pinned"].as_bool(),
+                pinned_by: updated_doc["pinned_by"].as_str().map(|s| s.to_string()),
+                pinned_at: updated_doc["pinned_at"].as_i64(),
+            }))
+        })
+    }
+
+    pub fn get_pinned_direct_messages(&self, user1: &str, user2: &str) -> Result<Vec<DirectMessage>> {
+        run_appwrite(async {
+            let q = vec![
+                json!({ "method": "equal", "attribute": "pinned", "values": [true] }).to_string(),
+                json!({ "method": "orderAsc", "attribute": "timestamp" }).to_string(),
+                json!({ "method": "limit", "values": [50] }).to_string(),
+            ];
+
+            let docs = self.list_documents("direct_messages", &q).await.map_err(map_err)?;
+            let mut messages = Vec::new();
+            for d in docs {
+                let sender = d["sender_tag"].as_str().unwrap_or("");
+                let receiver = d["receiver_tag"].as_str().unwrap_or("");
+                if (sender == user1 && receiver == user2) || (sender == user2 && receiver == user1) {
+                    messages.push(DirectMessage {
+                        id: d["id"].as_str().unwrap_or("").to_string(),
+                        sender_tag: sender.to_string(),
+                        receiver_tag: receiver.to_string(),
+                        msg_type: d["msg_type"].as_str().unwrap_or("").to_string(),
+                        content: d["content"].as_str().unwrap_or("").to_string(),
+                        file_url: d["file_url"].as_str().map(|s| s.to_string()),
+                        file_name: d["file_name"].as_str().map(|s| s.to_string()),
+                        file_size: d["file_size"].as_i64(),
+                        timestamp: d["timestamp"].as_i64().unwrap_or(0),
+                        status: d["status"].as_str().unwrap_or("").to_string(),
+                        is_deleted: d["is_deleted"].as_bool(),
+                        deleted_for_me: d["deleted_for_me"].as_str().map(|s| s.to_string()),
+                        deleted_by: d["deleted_by"].as_str().map(|s| s.to_string()),
+                        pinned: d["pinned"].as_bool(),
+                        pinned_by: d["pinned_by"].as_str().map(|s| s.to_string()),
+                        pinned_at: d["pinned_at"].as_i64(),
+                    });
+                }
+            }
+            Ok(messages)
+        })
+    }
+
+    pub fn delete_message(&self, message_id: &str, user_tag: &str, for_everyone: bool, deleted_by_role: Option<String>) -> Result<()> {
+        run_appwrite(async {
+            let doc = match self.get_document("messages", message_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(()),
+            };
+
+            let mut is_deleted = doc["is_deleted"].as_bool().unwrap_or(false);
+            let mut deleted_for_me = doc["deleted_for_me"].as_str().unwrap_or("").to_string();
+
+            if for_everyone {
+                is_deleted = true;
+            } else {
+                let mut users: Vec<&str> = deleted_for_me.split(',').filter(|s| !s.is_empty()).collect();
+                if !users.contains(&user_tag) {
+                    users.push(user_tag);
+                    deleted_for_me = users.join(",");
+                }
+            }
+
+            self.update_document("messages", message_id, serde_json::json!({
+                "is_deleted": is_deleted,
+                "deleted_for_me": deleted_for_me,
+                "deleted_by": deleted_by_role,
+            })).await.map_err(map_err)?;
+
+            Ok(())
+        })
+    }
+
+    pub fn delete_direct_message(&self, message_id: &str, user_tag: &str, for_everyone: bool, deleted_by_role: Option<String>) -> Result<()> {
+        run_appwrite(async {
+            let doc = match self.get_document("direct_messages", message_id).await.map_err(map_err)? {
+                Some(d) => d,
+                None => return Ok(()),
+            };
+
+            let mut is_deleted = doc["is_deleted"].as_bool().unwrap_or(false);
+            let mut deleted_for_me = doc["deleted_for_me"].as_str().unwrap_or("").to_string();
+
+            if for_everyone {
+                is_deleted = true;
+            } else {
+                let mut users: Vec<&str> = deleted_for_me.split(',').filter(|s| !s.is_empty()).collect();
+                if !users.contains(&user_tag) {
+                    users.push(user_tag);
+                    deleted_for_me = users.join(",");
+                }
+            }
+
+            self.update_document("direct_messages", message_id, serde_json::json!({
+                "is_deleted": is_deleted,
+                "deleted_for_me": deleted_for_me,
+                "deleted_by": deleted_by_role,
+            })).await.map_err(map_err)?;
+
+            Ok(())
         })
     }
 
@@ -1876,6 +2129,9 @@ impl Db {
                     pinned: d["pinned"].as_bool(),
                     pinned_by: d["pinned_by"].as_str().map(|s| s.to_string()),
                     pinned_at: d["pinned_at"].as_i64(),
+                is_deleted: d["is_deleted"].as_bool(),
+                deleted_for_me: d["deleted_for_me"].as_str().map(|s| s.to_string()),
+            deleted_by: d["deleted_by"].as_str().map(|s| s.to_string()),
                 });
             }
             Ok(messages)
@@ -2203,7 +2459,7 @@ impl Db {
         run_appwrite(async {
             let mut updated_data = serde_json::Map::new();
             updated_data.insert("settings".to_string(), serde_json::Value::String(settings.to_string()));
-            let _ = self.update_document("users", tag, updated_data).await.map_err(map_err)?;
+            let _ = self.update_document("users", tag, serde_json::Value::Object(updated_data)).await.map_err(map_err)?;
             Ok(())
         })?;
 

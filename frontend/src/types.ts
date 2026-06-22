@@ -22,6 +22,9 @@ export interface Message {
   pinned?: boolean;
   pinned_by?: string;
   pinned_at?: number;
+  is_deleted?: boolean;
+  deleted_for_me?: string;
+  deleted_by?: string;
 }
 
 export interface DirectMessage {
@@ -35,6 +38,12 @@ export interface DirectMessage {
   file_size?: number;
   timestamp: number;
   status: 'sent' | 'delivered' | 'seen';
+  is_deleted?: boolean;
+  deleted_for_me?: string;
+  deleted_by?: string;
+  pinned?: boolean;
+  pinned_by?: string;
+  pinned_at?: number;
 }
 
 export interface UserStatus {

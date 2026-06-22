@@ -95,6 +95,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   showAlert,
   rooms,
   fetchRooms,
+  allUsers,
   onSetActiveTag,
 }) => {
   const [inputText, setInputText] = useState('');
@@ -119,12 +120,29 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
 
   // Pinned Messages state
   const [showPins, setShowPins] = useState(false);
-  const [pinnedMessages, setPinnedMessages] = useState<Message[]>([]);
+  const [pinnedMessages, setPinnedMessages] = useState<(Message | DirectMessage)[]>([]);
   const [pinSearchQuery, setPinSearchQuery] = useState('');
-  const [pinSenderFilter, setPinSenderFilter] = useState('');
+  const [pinPinnerFilter, setPinPinnerFilter] = useState('');
   const [pinTypeFilter, setPinTypeFilter] = useState<'all' | 'text' | 'photo' | 'audio' | 'file'>('all');
   const [pinSortOrder, setPinSortOrder] = useState<'newest' | 'oldest'>('newest');
   const [pinDateFilter, setPinDateFilter] = useState('');
+
+  // Delete message state
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteMsgData, setDeleteMsgData] = useState<{ id: string, sender_tag: string, room_tag?: string, receiver_tag?: string } | null>(null);
+
+  const handleDeleteMessage = (deleteType: 'for_me' | 'for_everyone') => {
+    if (!deleteMsgData) return;
+    socket.emit('delete_message', {
+      message_id: deleteMsgData.id,
+      room_tag: deleteMsgData.room_tag,
+      receiver_tag: deleteMsgData.receiver_tag,
+      delete_type: deleteType,
+      user_tag: currentUser.tag,
+    });
+    setShowDeleteModal(false);
+    setDeleteMsgData(null);
+  };
 
   const isDirect = activeDirectUser !== null;
   const activeRoom = rooms.find(r => r.name === activeTag);
@@ -149,15 +167,25 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   }, [activeTag, isDirect]);
 
   useEffect(() => {
-    if (isDirect || !activeTag) {
+    if (!activeTag && !activeDirectUser) {
       setPinnedMessages([]);
       return;
     }
 
     const fetchPinned = async () => {
       try {
-        const res = await fetch(`${BACKEND_URL}/api/rooms/${activeTag}/pins`);
-        if (res.ok) {
+        let res;
+        if (isDirect && activeDirectUser) {
+          res = await fetch(`${BACKEND_URL}/api/dms/${activeDirectUser.tag}/pins`, {
+            headers: {
+              'X-User-Tag': currentUser.tag
+            }
+          });
+        } else if (activeTag) {
+          res = await fetch(`${BACKEND_URL}/api/rooms/${activeTag}/pins`);
+        }
+        
+        if (res && res.ok) {
           const data = await res.json();
           setPinnedMessages(data);
         }
@@ -168,20 +196,33 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
 
     fetchPinned();
 
-    const handleMsgPinned = (pinnedMsg: Message) => {
-      if (pinnedMsg.room_tag === activeTag) {
+    const handleMsgPinned = (pinnedMsg: Message | DirectMessage) => {
+      if ('room_tag' in pinnedMsg && pinnedMsg.room_tag === activeTag) {
         setPinnedMessages((prev) => {
           if (prev.some((m) => m.id === pinnedMsg.id)) {
             return prev.map((m) => m.id === pinnedMsg.id ? pinnedMsg : m);
           }
           return [pinnedMsg, ...prev];
         });
+      } else if ('receiver_tag' in pinnedMsg && isDirect && activeDirectUser) {
+        if (pinnedMsg.receiver_tag === activeDirectUser.tag || pinnedMsg.receiver_tag === currentUser.tag) {
+          setPinnedMessages((prev) => {
+            if (prev.some((m) => m.id === pinnedMsg.id)) {
+              return prev.map((m) => m.id === pinnedMsg.id ? pinnedMsg : m);
+            }
+            return [pinnedMsg, ...prev];
+          });
+        }
       }
     };
 
-    const handleMsgUnpinned = (data: { message_id: string; room_tag: string }) => {
-      if (data.room_tag === activeTag) {
+    const handleMsgUnpinned = (data: { message_id: string; room_tag?: string; receiver_tag?: string }) => {
+      if (data.room_tag && data.room_tag === activeTag) {
         setPinnedMessages((prev) => prev.filter((m) => m.id !== data.message_id));
+      } else if (data.receiver_tag && isDirect && activeDirectUser) {
+        if (data.receiver_tag === activeDirectUser.tag || data.receiver_tag === currentUser.tag) {
+          setPinnedMessages((prev) => prev.filter((m) => m.id !== data.message_id));
+        }
       }
     };
 
@@ -192,7 +233,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
       socket.off('message_pinned', handleMsgPinned);
       socket.off('message_unpinned', handleMsgUnpinned);
     };
-  }, [activeTag, isDirect]);
+  }, [activeTag, isDirect, activeDirectUser, currentUser.tag]);
 
   const handleAcceptInvite = async () => {
     if (!activeTag) return;
@@ -531,21 +572,35 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   }, [activeMessages.length, activeTag, activeDirectUser?.tag, currentUser.tag, isDirect]);
 
   const handlePinMessage = (messageId: string) => {
-    if (!activeTag) return;
-    socket.emit('pin_message', {
-      message_id: messageId,
-      room_tag: activeTag,
-      user_id: currentUser.tag,
-    });
+    if (isDirect && activeDirectUser) {
+      socket.emit('pin_message', {
+        message_id: messageId,
+        receiver_tag: activeDirectUser.tag,
+        user_id: currentUser.tag,
+      });
+    } else if (activeTag) {
+      socket.emit('pin_message', {
+        message_id: messageId,
+        room_tag: activeTag,
+        user_id: currentUser.tag,
+      });
+    }
   };
 
   const handleUnpinMessage = (messageId: string) => {
-    if (!activeTag) return;
-    socket.emit('unpin_message', {
-      message_id: messageId,
-      room_tag: activeTag,
-      user_id: currentUser.tag,
-    });
+    if (isDirect && activeDirectUser) {
+      socket.emit('unpin_message', {
+        message_id: messageId,
+        receiver_tag: activeDirectUser.tag,
+        user_id: currentUser.tag,
+      });
+    } else if (activeTag) {
+      socket.emit('unpin_message', {
+        message_id: messageId,
+        room_tag: activeTag,
+        user_id: currentUser.tag,
+      });
+    }
   };
 
   const handleJumpToMessage = (messageId: string) => {
@@ -561,23 +616,43 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
     }
   };
 
-  // Get all unique senders from pinned messages to populate a filter dropdown
-  const pinSenders = Array.from(new Set(pinnedMessages.map(m => m.sender_name)));
+  // Helper to get sender name for pin display
+  const getPinSenderName = (msg: Message | DirectMessage) => {
+    if ('sender_name' in msg) {
+      return msg.sender_name;
+    }
+    return msg.sender_tag === currentUser.tag ? currentUser.username : activeDirectUser?.username || msg.sender_tag;
+  };
+
+  // Helper to get name of user who pinned the message
+  const getPinnerName = (msg: Message | DirectMessage) => {
+    if (!msg.pinned_by) return 'Unknown';
+    if (msg.pinned_by === currentUser.tag) {
+      return currentUser.username;
+    }
+    const user = allUsers.find(u => u.tag === msg.pinned_by);
+    return user ? user.username : msg.pinned_by;
+  };
+
+  // Get all unique users who pinned to populate a filter dropdown
+  const pinPinners = Array.from(new Set(pinnedMessages.map(m => getPinnerName(m)).filter(name => name !== 'Unknown')));
 
   // Filter & Sort pinned messages
   const filteredPins = pinnedMessages
     .filter(msg => {
+      const senderName = getPinSenderName(msg);
+      const pinnerName = getPinnerName(msg);
       // 1. Search Query
       if (pinSearchQuery.trim()) {
         const query = pinSearchQuery.toLowerCase();
         const contentMatch = msg.content?.toLowerCase().includes(query);
-        const nameMatch = msg.sender_name?.toLowerCase().includes(query);
+        const nameMatch = senderName?.toLowerCase().includes(query);
         const fileMatch = msg.file_name?.toLowerCase().includes(query);
         if (!contentMatch && !nameMatch && !fileMatch) return false;
       }
 
-      // 2. Sender Filter
-      if (pinSenderFilter && msg.sender_name !== pinSenderFilter) {
+      // 2. Pinner Filter
+      if (pinPinnerFilter && pinnerName !== pinPinnerFilter) {
         return false;
       }
 
@@ -851,45 +926,24 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                   {activeDirectUser.bio && (
                     <div
                       style={{
-                        fontSize: '0.8rem',
-                        fontWeight: '500',
-                        color: '#fff',
+                        fontSize: '0.85rem',
+                        color: 'var(--text-muted)',
                         display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        maxWidth: '400px',
-                        marginTop: '6px',
-                        padding: '6px 14px',
-                        background: 'linear-gradient(135deg, rgba(138, 43, 226, 0.15) 0%, rgba(46, 196, 182, 0.1) 100%)',
-                        border: '1px solid rgba(138, 43, 226, 0.2)',
-                        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
-                        backdropFilter: 'blur(10px)',
-                        borderRadius: '24px',
-                        width: 'fit-content',
-                        letterSpacing: '0.3px',
-                        transition: 'transform 0.2s ease, box-shadow 0.2s ease',
-                        cursor: 'default'
+                        alignItems: 'flex-start',
+                        gap: '6px',
+                        maxWidth: '500px',
+                        marginTop: '4px',
+                        cursor: 'default',
+                        fontStyle: 'italic'
                       }}
                       title={activeDirectUser.bio}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.transform = 'translateY(-1px)';
-                        e.currentTarget.style.boxShadow = '0 6px 16px rgba(138, 43, 226, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.1)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.transform = 'translateY(0)';
-                        e.currentTarget.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.05)';
-                      }}
                     >
-                      <Sparkles size={14} style={{ flexShrink: 0, color: 'var(--accent-cyan)' }} />
+                      <Sparkles size={14} style={{ flexShrink: 0, color: 'var(--text-muted)', marginTop: '2px', opacity: 0.7 }} />
                       <span style={{
-                        whiteSpace: 'nowrap',
-                        textOverflow: 'ellipsis',
-                        overflow: 'hidden',
-                        fontStyle: 'normal',
-                        lineHeight: '1',
-                        background: 'linear-gradient(90deg, #fff 0%, rgba(255, 255, 255, 0.8) 100%)',
-                        WebkitBackgroundClip: 'text',
-                        WebkitTextFillColor: 'transparent'
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        lineHeight: '1.4',
+                        opacity: 0.85
                       }}>
                         {activeDirectUser.bio}
                       </span>
@@ -915,61 +969,12 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
           </div>
         </div>
 
-        {isDirect && activeDirectUser && onStartCall && (
-          <button
-            className="call-header-btn"
-            onClick={() => onStartCall(activeDirectUser)}
-            title={`Call ${activeDirectUser.username}`}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: 'var(--accent)',
-              cursor: 'pointer',
-              padding: '10px',
-              borderRadius: '50%',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'background 0.2s',
-              marginRight: '8px'
-            }}
-          >
-            <Phone size={22} />
-          </button>
-        )}
-        {!isDirect && activeTag && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <button
-              className={`call-header-btn ${showPins ? 'active' : ''}`}
-              onClick={() => setShowPins(!showPins)}
-              title="Pinned Messages & Files"
-              style={{
-                background: showPins ? 'rgba(0, 168, 204, 0.15)' : 'none',
-                border: 'none',
-                color: showPins ? 'var(--accent-cyan)' : 'var(--text-muted)',
-                cursor: 'pointer',
-                padding: '10px',
-                borderRadius: '50%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                transition: 'all 0.2s',
-              }}
-            >
-              <Pin size={22} fill={showPins ? "var(--accent-cyan)" : "none"} />
-            </button>
-
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {isDirect && activeDirectUser && onStartCall && (
             <button
               className="call-header-btn"
-              onClick={() => {
-                if (activeRoom) {
-                  setRoomVisibility(activeRoom.visibility || 'public');
-                  setBannedWordsInput(activeRoom.banned_words || '');
-                  setRoomDescriptionInput(activeRoom.description || '');
-                }
-                setShowSettingsModal(true);
-              }}
-              title="Group settings & management"
+              onClick={() => onStartCall(activeDirectUser)}
+              title={`Call ${activeDirectUser.username}`}
               style={{
                 background: 'none',
                 border: 'none',
@@ -981,13 +986,64 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                 alignItems: 'center',
                 justifyContent: 'center',
                 transition: 'background 0.2s',
-                marginRight: '8px'
               }}
             >
-              <Settings size={22} />
+              <Phone size={22} />
             </button>
-          </div>
-        )}
+          )}
+          {((!isDirect && activeTag) || (isDirect && activeDirectUser)) && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <button
+                className={`call-header-btn ${showPins ? 'active' : ''}`}
+                onClick={() => setShowPins(!showPins)}
+                title="Pinned Messages & Files"
+                style={{
+                  background: showPins ? 'rgba(0, 168, 204, 0.15)' : 'none',
+                  border: 'none',
+                  color: showPins ? 'var(--accent-cyan)' : 'var(--text-muted)',
+                  cursor: 'pointer',
+                  padding: '10px',
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 0.2s',
+                }}
+              >
+                <Pin size={22} fill={showPins ? "var(--accent-cyan)" : "none"} />
+              </button>
+
+              {!isDirect && (
+                <button
+                  className="call-header-btn"
+                  onClick={() => {
+                    if (activeRoom) {
+                      setRoomVisibility(activeRoom.visibility || 'public');
+                      setBannedWordsInput(activeRoom.banned_words || '');
+                      setRoomDescriptionInput(activeRoom.description || '');
+                    }
+                    setShowSettingsModal(true);
+                  }}
+                  title="Group settings & management"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--accent)',
+                    cursor: 'pointer',
+                    padding: '10px',
+                    borderRadius: '50%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'background 0.2s',
+                  }}
+                >
+                  <Settings size={22} />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 24-Hour Preview Mode Banner */}
@@ -1059,113 +1115,150 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                   >
                     {!isOutgoing && !isDirect && <div className="message-sender">{senderName}</div>}
 
-                    {isOutgoing && !isDirect && (
-                      <div className="message-actions" style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        opacity: 0,
-                        transition: 'opacity 0.2s',
-                        marginRight: '8px',
-                        alignSelf: 'center'
-                      }}>
-                        {(msg as Message).pinned ? (
-                          (userMember?.role === 'admin' || userMember?.role === 'co_admin' || userMember?.role === 'moderator' || (msg as Message).pinned_by === currentUser.tag) && (
-                            <button
-                              onClick={() => handleUnpinMessage(msg.id)}
-                              style={{
-                                background: 'rgba(255,255,255,0.05)',
-                                border: '1px solid var(--border-color)',
-                                borderRadius: '50%',
-                                width: '28px',
-                                height: '28px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                cursor: 'pointer',
-                                color: 'var(--text-main)',
-                                transition: 'all 0.2s'
-                              }}
-                              title="Unpin Message"
-                              className="hover-action-btn"
-                            >
-                              <PinOff size={14} />
-                            </button>
-                          )
-                        ) : (
-                          userMember && (
-                            <button
-                              onClick={() => handlePinMessage(msg.id)}
-                              style={{
-                                background: 'rgba(255,255,255,0.05)',
-                                border: '1px solid var(--border-color)',
-                                borderRadius: '50%',
-                                width: '28px',
-                                height: '28px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                cursor: 'pointer',
-                                color: 'var(--text-muted)',
-                                transition: 'all 0.2s'
-                              }}
-                              title="Pin Message"
-                              className="hover-action-btn"
-                            >
-                              <Pin size={14} />
-                            </button>
-                          )
-                        )}
-                      </div>
-                    )}
+                    <div className="message-actions" style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      opacity: 0,
+                      transition: 'opacity 0.2s',
+                      marginRight: isOutgoing ? '8px' : '0',
+                      marginLeft: !isOutgoing ? '8px' : '0',
+                      alignSelf: 'center',
+                      order: !isOutgoing ? 1 : 0
+                    }}>
+                      {msg.pinned ? (
+                        ((!isDirect && (userMember?.role === 'admin' || userMember?.role === 'co_admin' || userMember?.role === 'moderator')) || msg.pinned_by === currentUser.tag || (isDirect && (('sender_tag' in msg && msg.sender_tag === currentUser.tag) || ('receiver_tag' in msg && msg.receiver_tag === currentUser.tag)))) && (
+                          <button
+                            onClick={() => handleUnpinMessage(msg.id)}
+                            style={{
+                              background: 'rgba(255,255,255,0.05)',
+                              border: '1px solid var(--border-color)',
+                              borderRadius: '50%',
+                              width: '28px',
+                              height: '28px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              cursor: 'pointer',
+                              color: 'var(--text-main)',
+                              transition: 'all 0.2s'
+                            }}
+                            title="Unpin Message"
+                            className="hover-action-btn"
+                          >
+                            <PinOff size={14} />
+                          </button>
+                        )
+                      ) : (
+                        ((!isDirect && userMember) || isDirect) && (
+                          <button
+                            onClick={() => handlePinMessage(msg.id)}
+                            style={{
+                              background: 'rgba(255,255,255,0.05)',
+                              border: '1px solid var(--border-color)',
+                              borderRadius: '50%',
+                              width: '28px',
+                              height: '28px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              cursor: 'pointer',
+                              color: 'var(--text-muted)',
+                              transition: 'all 0.2s'
+                            }}
+                            title="Pin Message"
+                            className="hover-action-btn"
+                          >
+                            <Pin size={14} />
+                          </button>
+                        )
+                      )}
+                      <button
+                        onClick={() => {
+                          setDeleteMsgData({
+                            id: msg.id,
+                            sender_tag: isDirect ? (msg as DirectMessage).sender_tag : (msg as Message).sender_id,
+                            room_tag: isDirect ? undefined : (msg as Message).room_tag,
+                            receiver_tag: isDirect ? (msg as DirectMessage).receiver_tag : undefined,
+                          });
+                          setShowDeleteModal(true);
+                        }}
+                        style={{
+                          background: 'rgba(255,255,255,0.05)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '50%',
+                          width: '28px',
+                          height: '28px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: 'pointer',
+                          color: 'var(--accent-glow)',
+                          transition: 'all 0.2s'
+                        }}
+                        title="Delete Message"
+                        className="hover-action-btn"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
 
                     <div className="message-bubble" style={{ position: 'relative' }}>
                       {/* Pin badge indicator */}
-                      {!isDirect && (msg as Message).pinned && (
+                      {msg.pinned && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', color: 'var(--accent-glow)', marginBottom: '4px', opacity: 0.8 }}>
                           <Pin size={10} fill="var(--accent-glow)" />
-                          <span>Pinned by @{(msg as Message).pinned_by}</span>
+                          <span>Pinned by @{msg.pinned_by}</span>
                         </div>
                       )}
 
-                      {/* 1. Text Message */}
-                      {msg.msg_type === 'text' && <div>{msg.content}</div>}
+                      {msg.is_deleted ? (
+                        <div style={{ fontStyle: 'italic', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ fontSize: '1rem' }}>🚫</span>
+                          {msg.deleted_by === 'admin' ? 'This message was deleted by admin' : msg.deleted_by === 'moderator' ? 'This message was deleted by moderator' : 'This message was deleted'}
+                        </div>
+                      ) : (
+                        <>
+                          {/* 1. Text Message */}
+                          {msg.msg_type === 'text' && <div>{msg.content}</div>}
 
-                      {/* 2. Photo Message */}
-                      {msg.msg_type === 'photo' && msg.file_url && (
-                        <img
-                          src={getUploadUrl(msg.file_url)}
-                          alt="attachment"
-                          className="media-message-photo"
-                          onClick={() => setSelectedPhoto(getUploadUrl(msg.file_url))}
-                        />
-                      )}
+                          {/* 2. Photo Message */}
+                          {msg.msg_type === 'photo' && msg.file_url && (
+                            <img
+                              src={getUploadUrl(msg.file_url)}
+                              alt="attachment"
+                              className="media-message-photo"
+                              onClick={() => setSelectedPhoto(getUploadUrl(msg.file_url))}
+                            />
+                          )}
 
-                      {/* 3. Audio Message (Voice Note) */}
-                      {msg.msg_type === 'audio' && msg.file_url && (
-                        <CustomAudioMessage url={getUploadUrl(msg.file_url)} />
-                      )}
+                          {/* 3. Audio Message (Voice Note) */}
+                          {msg.msg_type === 'audio' && msg.file_url && (
+                            <CustomAudioMessage url={getUploadUrl(msg.file_url)} />
+                          )}
 
-                      {/* 4. File Attachment Message */}
-                      {msg.msg_type === 'file' && msg.file_url && (
-                        <a
-                          href={getUploadUrl(msg.file_url)}
-                          download={msg.file_name}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="media-message-file"
-                        >
-                          <div className="file-icon-wrapper">
-                            <FileText size={20} />
-                          </div>
-                          <div className="file-info">
-                            <div className="file-name">{msg.file_name}</div>
-                            <div className="file-size">
-                              {msg.file_size ? `${(msg.file_size / 1024).toFixed(1)} KB` : 'Unknown size'}
-                            </div>
-                          </div>
-                          <Download size={16} style={{ color: 'var(--text-muted)', marginLeft: '8px' }} />
-                        </a>
+                          {/* 4. File Attachment Message */}
+                          {msg.msg_type === 'file' && msg.file_url && (
+                            <a
+                              href={getUploadUrl(msg.file_url)}
+                              download={msg.file_name}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="media-message-file"
+                            >
+                              <div className="file-icon-wrapper">
+                                <FileText size={20} />
+                              </div>
+                              <div className="file-info">
+                                <div className="file-name">{msg.file_name}</div>
+                                <div className="file-size">
+                                  {msg.file_size ? `${(msg.file_size / 1024).toFixed(1)} KB` : 'Unknown size'}
+                                </div>
+                              </div>
+                              <Download size={16} style={{ color: 'var(--text-muted)', marginLeft: '8px' }} />
+                            </a>
+                          )}
+                        </>
                       )}
 
                       {/* Metadata & Status checkmarks */}
@@ -1182,65 +1275,6 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                       </div>
                     </div>
 
-                    {!isOutgoing && !isDirect && (
-                      <div className="message-actions" style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        opacity: 0,
-                        transition: 'opacity 0.2s',
-                        marginLeft: '8px',
-                        alignSelf: 'center'
-                      }}>
-                        {(msg as Message).pinned ? (
-                          (userMember?.role === 'admin' || userMember?.role === 'co_admin' || userMember?.role === 'moderator' || (msg as Message).pinned_by === currentUser.tag) && (
-                            <button
-                              onClick={() => handleUnpinMessage(msg.id)}
-                              style={{
-                                background: 'rgba(255,255,255,0.05)',
-                                border: '1px solid var(--border-color)',
-                                borderRadius: '50%',
-                                width: '28px',
-                                height: '28px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                cursor: 'pointer',
-                                color: 'var(--text-main)',
-                                transition: 'all 0.2s'
-                              }}
-                              title="Unpin Message"
-                              className="hover-action-btn"
-                            >
-                              <PinOff size={14} />
-                            </button>
-                          )
-                        ) : (
-                          userMember && (
-                            <button
-                              onClick={() => handlePinMessage(msg.id)}
-                              style={{
-                                background: 'rgba(255,255,255,0.05)',
-                                border: '1px solid var(--border-color)',
-                                borderRadius: '50%',
-                                width: '28px',
-                                height: '28px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                cursor: 'pointer',
-                                color: 'var(--text-muted)',
-                                transition: 'all 0.2s'
-                              }}
-                              title="Pin Message"
-                              className="hover-action-btn"
-                            >
-                              <Pin size={14} />
-                            </button>
-                          )
-                        )}
-                      </div>
-                    )}
                   </div>
                 </React.Fragment>
               );
@@ -1319,7 +1353,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
         </div>
 
         {/* Pinned Messages Sidebar Dashboard */}
-        {showPins && !isDirect && (
+        {showPins && (
           <div className="pinned-sidebar" style={{
             width: '380px',
             borderLeft: '1px solid var(--border-color)',
@@ -1394,12 +1428,12 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
 
               {/* Multi-row filters */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                {/* Sender Filter */}
+                {/* Pinned By Filter */}
                 <div>
-                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Sender</label>
+                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Pinned By</label>
                   <select
-                    value={pinSenderFilter}
-                    onChange={(e) => setPinSenderFilter(e.target.value)}
+                    value={pinPinnerFilter}
+                    onChange={(e) => setPinPinnerFilter(e.target.value)}
                     style={{
                       width: '100%',
                       padding: '6px',
@@ -1411,8 +1445,8 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                     }}
                   >
                     <option value="">All Users</option>
-                    {pinSenders.map(s => (
-                      <option key={s} value={s}>{s}</option>
+                    {pinPinners.map(p => (
+                      <option key={p} value={p}>{p}</option>
                     ))}
                   </select>
                 </div>
@@ -1487,11 +1521,11 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
               </div>
 
               {/* Reset Filters Link */}
-              {(pinSearchQuery || pinSenderFilter || pinTypeFilter !== 'all' || pinDateFilter) && (
+              {(pinSearchQuery || pinPinnerFilter || pinTypeFilter !== 'all' || pinDateFilter) && (
                 <button
                   onClick={() => {
                     setPinSearchQuery('');
-                    setPinSenderFilter('');
+                    setPinPinnerFilter('');
                     setPinTypeFilter('all');
                     setPinDateFilter('');
                   }}
@@ -1537,11 +1571,14 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                 </div>
               ) : (
                 filteredPins.map((msg) => {
-                  const isUserAllowedToUnpin =
-                    userMember?.role === 'admin' ||
+                  const isUserAllowedToUnpin = isDirect ?
+                    (msg.pinned_by === currentUser.tag || ('sender_tag' in msg && msg.sender_tag === currentUser.tag) || ('receiver_tag' in msg && msg.receiver_tag === currentUser.tag)) :
+                    (userMember?.role === 'admin' ||
                     userMember?.role === 'co_admin' ||
                     userMember?.role === 'moderator' ||
-                    msg.pinned_by === currentUser.tag;
+                    msg.pinned_by === currentUser.tag);
+
+                  const senderName = getPinSenderName(msg);
 
                   return (
                     <div
@@ -1571,7 +1608,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                         <div>
                           <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-main)' }}>
-                            {msg.sender_name}
+                            {senderName}
                           </div>
                           <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                             Pinned by @{msg.pinned_by}
@@ -2360,6 +2397,68 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                 }}
               >
                 Rename
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Message Modal */}
+      {showDeleteModal && deleteMsgData && (
+        <div className="modal-overlay" onClick={() => setShowDeleteModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ padding: '24px', maxWidth: '320px' }}>
+            <h3 style={{ margin: '0 0 16px 0', fontSize: '1.2rem', textAlign: 'center' }}>Delete Message</h3>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '24px', textAlign: 'center' }}>
+              Are you sure you want to delete this message?
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {/* Only the sender or an admin/moderator can delete for everyone */}
+              {(deleteMsgData.sender_tag === currentUser.tag || (!isDirect && userMember && (userMember.role === 'admin' || userMember.role === 'co_admin' || userMember.role === 'moderator'))) && (
+                <button
+                  onClick={() => handleDeleteMessage('for_everyone')}
+                  style={{
+                    padding: '12px',
+                    background: 'var(--accent-glow)',
+                    color: 'var(--bg-main)',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                  }}
+                  className="hover-scale"
+                >
+                  Delete for Everyone
+                </button>
+              )}
+              <button
+                onClick={() => handleDeleteMessage('for_me')}
+                style={{
+                  padding: '12px',
+                  background: 'rgba(255,255,255,0.05)',
+                  color: 'var(--text-main)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                }}
+              >
+                Delete for Me
+              </button>
+              <button
+                onClick={() => setShowDeleteModal(false)}
+                style={{
+                  padding: '12px',
+                  background: 'transparent',
+                  color: 'var(--text-muted)',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                }}
+              >
+                Cancel
               </button>
             </div>
           </div>
