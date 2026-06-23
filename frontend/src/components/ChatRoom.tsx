@@ -4,7 +4,7 @@ import {
   FileText, Download, Play, Pause, Volume2, Phone,
   Settings, Users, ShieldAlert,
   QrCode, UserPlus, Trash2, Pin, PinOff, Search,
-  Share2, Info, Edit3, Sparkles
+  Share2, Info, Edit3, Sparkles, CornerUpRight, CornerUpLeft
 } from 'lucide-react';
 import type { User, Message, DirectMessage, Room, RoomMember, RoomInvitation } from '../types';
 import { socket, getUploadUrl, BACKEND_URL } from '../socket';
@@ -131,17 +131,358 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteMsgData, setDeleteMsgData] = useState<{ id: string, sender_tag: string, room_tag?: string, receiver_tag?: string } | null>(null);
 
+  // Forward message state
+  const [showForwardModal, setShowForwardModal] = useState(false);
+  const [forwardMsgData, setForwardMsgData] = useState<Message | DirectMessage | null>(null);
+  const [forwardSearchQuery, setForwardSearchQuery] = useState('');
+  const [selectedForwardTargets, setSelectedForwardTargets] = useState<string[]>([]); // room_tags or user_tags
+  const [forwardActiveTab, setForwardActiveTab] = useState<'groups' | 'dms'>('groups');
+
+  // Reply message state
+  const [replyingToMessage, setReplyingToMessage] = useState<Message | DirectMessage | null>(null);
+
+  // Message Selection & Bulk Actions state
+  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
+  const [bulkForwardMsgs, setBulkForwardMsgs] = useState<(Message | DirectMessage)[]>([]);
+  const [replyingToMsgs, setReplyingToMsgs] = useState<(Message | DirectMessage)[]>([]);
+
+  // Mentioning features state
+  const [showMentionDropdown, setShowMentionDropdown] = useState(false);
+  const [mentionSearchQuery, setMentionSearchQuery] = useState('');
+  const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
+  const [mentionStartIndex, setMentionStartIndex] = useState(-1);
+
   const handleDeleteMessage = (deleteType: 'for_me' | 'for_everyone') => {
-    if (!deleteMsgData) return;
-    socket.emit('delete_message', {
-      message_id: deleteMsgData.id,
-      room_tag: deleteMsgData.room_tag,
-      receiver_tag: deleteMsgData.receiver_tag,
-      delete_type: deleteType,
-      user_tag: currentUser.tag,
+    if (selectedMessageIds.length > 0) {
+      const selectedMsgs = getSelectedMessageObjects();
+      selectedMsgs.forEach((msg) => {
+        const senderTag = isDirect ? (msg as DirectMessage).sender_tag : (msg as Message).sender_id;
+        const roomTag = isDirect ? undefined : (msg as Message).room_tag;
+        const receiverTag = isDirect ? (msg as DirectMessage).receiver_tag : undefined;
+
+        let canDeleteForEveryone = false;
+        if (deleteType === 'for_everyone') {
+          if (senderTag === currentUser.tag) {
+            canDeleteForEveryone = true;
+          } else if (!isDirect && userMember && (userMember.role === 'admin' || userMember.role === 'co_admin' || userMember.role === 'moderator')) {
+            canDeleteForEveryone = true;
+          }
+        }
+
+        socket.emit('delete_message', {
+          message_id: msg.id,
+          room_tag: roomTag,
+          receiver_tag: receiverTag,
+          delete_type: canDeleteForEveryone ? 'for_everyone' : 'for_me',
+          user_tag: currentUser.tag,
+        });
+      });
+      setSelectedMessageIds([]);
+      setShowDeleteModal(false);
+      setDeleteMsgData(null);
+    } else if (deleteMsgData) {
+      socket.emit('delete_message', {
+        message_id: deleteMsgData.id,
+        room_tag: deleteMsgData.room_tag,
+        receiver_tag: deleteMsgData.receiver_tag,
+        delete_type: deleteType,
+        user_tag: currentUser.tag,
+      });
+      setShowDeleteModal(false);
+      setDeleteMsgData(null);
+    }
+  };
+
+  const parseForwardedContent = (msg: Message | DirectMessage) => {
+    const content = msg.content || '';
+    if (content.startsWith('↪️ Forwarded from @')) {
+      const firstNewline = content.indexOf('\n');
+      if (firstNewline !== -1) {
+        const header = content.substring(0, firstNewline);
+        const body = content.substring(firstNewline + 1);
+        const originalSender = header.replace('↪️ Forwarded from @', '');
+        return { isForwarded: true, originalSender, body };
+      }
+    }
+
+    const isDirectMsg = 'receiver_tag' in msg;
+    const isOutgoing = isDirectMsg
+      ? msg.sender_tag === currentUser.tag
+      : msg.sender_id === currentUser.tag;
+
+    let senderName = '';
+    if (isDirectMsg) {
+      if (isOutgoing) {
+        senderName = currentUser.username;
+      } else {
+        const found = allUsers.find(u => u.tag === msg.sender_tag);
+        senderName = found ? found.username : msg.sender_tag;
+      }
+    } else {
+      senderName = (msg as Message).sender_name || (msg as Message).sender_id;
+    }
+
+    return { isForwarded: false, originalSender: senderName, body: content };
+  };
+
+  const parseReplyContent = (content: string) => {
+    if (content && content.startsWith('💬 Reply to @')) {
+      const firstLineEnd = content.indexOf('\n');
+      if (firstLineEnd !== -1) {
+        const header = content.substring(0, firstLineEnd);
+        const body = content.substring(firstLineEnd + 1);
+        
+        const senderStart = '💬 Reply to @'.length;
+        const idMarker = ' [id:';
+        const senderEnd = header.indexOf(idMarker);
+        if (senderEnd !== -1) {
+          const senderName = header.substring(senderStart, senderEnd);
+          const idStart = senderEnd + idMarker.length;
+          const idEndMarker = ']: ';
+          const idEnd = header.indexOf(idEndMarker, idStart);
+          if (idEnd !== -1) {
+            const messageId = header.substring(idStart, idEnd);
+            const originalText = header.substring(idEnd + idEndMarker.length);
+            return { isReply: true, senderName, messageId, originalText, body };
+          }
+        }
+      }
+    }
+    return { isReply: false, senderName: '', messageId: '', originalText: '', body: content };
+  };
+
+  const getMsgSenderName = (msg: Message | DirectMessage) => {
+    const isDirectMsg = 'receiver_tag' in msg;
+    const isOutgoing = isDirectMsg
+      ? msg.sender_tag === currentUser.tag
+      : msg.sender_id === currentUser.tag;
+
+    if (isDirectMsg) {
+      return isOutgoing
+        ? currentUser.username
+        : (activeDirectUser?.username || msg.sender_tag);
+    } else {
+      return msg.sender_name || msg.sender_id;
+    }
+  };
+
+  const getMsgPreviewText = (msg: Message | DirectMessage) => {
+    let cleanContent = msg.content || '';
+    if (cleanContent.startsWith('💬 Reply to @')) {
+      cleanContent = parseReplyContent(cleanContent).body;
+    }
+    if (cleanContent.startsWith('↪️ Forwarded from @')) {
+      cleanContent = parseForwardedContent(msg).body;
+    }
+
+    if (msg.msg_type === 'photo') return '📷 Photo';
+    if (msg.msg_type === 'audio') return '🎵 Voice Note';
+    if (msg.msg_type === 'file') return `📁 File: ${msg.file_name || 'Attachment'}`;
+    return cleanContent;
+  };
+
+  const getSendContent = (baseText: string) => {
+    if (!replyingToMessage) return baseText;
+    const senderName = getMsgSenderName(replyingToMessage);
+    const parentId = replyingToMessage.id;
+    let previewText = getMsgPreviewText(replyingToMessage);
+    previewText = previewText.replace(/\n/g, ' ').substring(0, 60);
+    return `💬 Reply to @${senderName} [id:${parentId}]: ${previewText}\n${baseText}`;
+  };
+
+  const getCleanBodyText = (msg: Message | DirectMessage) => {
+    let text = msg.content || '';
+    const replyParsed = parseReplyContent(text);
+    if (replyParsed.isReply) {
+      text = replyParsed.body;
+    }
+    if (text.startsWith('↪️ Forwarded from @')) {
+      const firstNewline = text.indexOf('\n');
+      if (firstNewline !== -1) {
+        text = text.substring(firstNewline + 1);
+      }
+    }
+    return text;
+  };
+
+  const renderMessageContent = (text: string) => {
+    if (!text) return '';
+    const mentionRegex = /(@\w+)/g;
+    const parts = text.split(mentionRegex);
+    if (parts.length === 1) return text;
+
+    return parts.map((part, index) => {
+      if (part.startsWith('@')) {
+        return (
+          <span key={index} className="chat-mention-tag">
+            {part}
+          </span>
+        );
+      }
+      return part;
     });
-    setShowDeleteModal(false);
-    setDeleteMsgData(null);
+  };
+
+  // Message Selection & Bulk Actions helpers
+  const isSelectionModeActive = selectedMessageIds.length > 0;
+
+  const toggleMessageSelection = (messageId: string) => {
+    setSelectedMessageIds((prev) => {
+      if (prev.includes(messageId)) {
+        return prev.filter((id) => id !== messageId);
+      } else {
+        return [...prev, messageId];
+      }
+    });
+  };
+
+  const getSelectedMessageObjects = () => {
+    const list = isDirect ? directMessages : messages;
+    return list.filter((m) => selectedMessageIds.includes(m.id));
+  };
+
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleMessageTouchStart = (msgId: string) => {
+    if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = setTimeout(() => {
+      setSelectedMessageIds((prev) => {
+        if (!prev.includes(msgId)) {
+          return [...prev, msgId];
+        }
+        return prev;
+      });
+      if (navigator.vibrate) {
+        navigator.vibrate(50);
+      }
+    }, 500);
+  };
+
+  const handleMessageTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handleMessageContextMenu = (e: React.MouseEvent, msgId: string) => {
+    e.preventDefault();
+    setSelectedMessageIds((prev) => {
+      if (!prev.includes(msgId)) {
+        return [...prev, msgId];
+      }
+      return prev;
+    });
+  };
+
+  const handleMessageClick = (msgId: string) => {
+    if (isSelectionModeActive) {
+      toggleMessageSelection(msgId);
+    }
+  };
+
+  const handleBulkPinToggle = () => {
+    const msgs = getSelectedMessageObjects();
+    const allPinned = msgs.every(m => m.pinned);
+    
+    msgs.forEach((m) => {
+      if (allPinned) {
+        handleUnpinMessage(m.id);
+      } else {
+        if (!m.pinned) {
+          handlePinMessage(m.id);
+        }
+      }
+    });
+    setSelectedMessageIds([]);
+  };
+
+  const handleBulkForwardClick = () => {
+    const msgs = getSelectedMessageObjects();
+    if (msgs.length === 0) return;
+    setBulkForwardMsgs(msgs);
+    setForwardMsgData(msgs[0]);
+    setSelectedForwardTargets([]);
+    setForwardSearchQuery('');
+    setForwardActiveTab('groups');
+    setShowForwardModal(true);
+  };
+
+  const handleBulkReplyClick = () => {
+    const msgs = getSelectedMessageObjects();
+    if (msgs.length === 0) return;
+    setReplyingToMsgs(msgs);
+    setSelectedMessageIds([]);
+    setTimeout(() => {
+      messageInputRef.current?.focus();
+    }, 50);
+  };
+
+  const handleBulkDeleteClick = () => {
+    const selectedMsgs = getSelectedMessageObjects();
+    if (selectedMsgs.length === 0) return;
+    const allOwnMessages = selectedMsgs.every(m => {
+      const senderTag = isDirect ? (m as DirectMessage).sender_tag : (m as Message).sender_id;
+      return senderTag === currentUser.tag;
+    });
+    const isAdmin = !isDirect && userMember && (userMember.role === 'admin' || userMember.role === 'co_admin' || userMember.role === 'moderator');
+
+    setDeleteMsgData({
+      id: 'bulk',
+      sender_tag: (allOwnMessages || isAdmin) ? currentUser.tag : 'other',
+      room_tag: isDirect ? undefined : (activeTag || undefined),
+      receiver_tag: isDirect ? (activeDirectUser?.tag || undefined) : undefined,
+    });
+    setShowDeleteModal(true);
+  };
+
+  const handleForwardSubmit = () => {
+    const messagesToForward = bulkForwardMsgs.length > 0 ? bulkForwardMsgs : (forwardMsgData ? [forwardMsgData] : []);
+    if (messagesToForward.length === 0 || selectedForwardTargets.length === 0) return;
+
+    selectedForwardTargets.forEach((targetTag) => {
+      messagesToForward.forEach((msg) => {
+        const { originalSender } = parseForwardedContent(msg);
+        const body = getCleanBodyText(msg);
+        const finalContent = `↪️ Forwarded from @${originalSender}\n${body}`;
+        const messageId = Math.random().toString(36).substring(2, 11);
+        const isRoom = rooms.some(r => r.name === targetTag);
+
+        if (isRoom) {
+          const msgPayload = {
+            id: messageId,
+            room_tag: targetTag,
+            sender_id: currentUser.tag,
+            sender_name: currentUser.username,
+            msg_type: msg.msg_type,
+            content: finalContent,
+            file_url: msg.file_url,
+            file_name: msg.file_name,
+            file_size: msg.file_size,
+          };
+          socket.emit('send_msg', msgPayload);
+        } else {
+          const msgPayload = {
+            id: messageId,
+            sender_tag: currentUser.tag,
+            receiver_tag: targetTag,
+            msg_type: msg.msg_type,
+            content: finalContent,
+            file_url: msg.file_url,
+            file_name: msg.file_name,
+            file_size: msg.file_size,
+          };
+          socket.emit('send_direct_msg', msgPayload);
+        }
+      });
+    });
+
+    setShowForwardModal(false);
+    setForwardMsgData(null);
+    setBulkForwardMsgs([]);
+    setSelectedMessageIds([]);
+    setSelectedForwardTargets([]);
+    setForwardSearchQuery('');
   };
 
   const isDirect = activeDirectUser !== null;
@@ -555,6 +896,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const messageInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingIntervalRef = useRef<number | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -692,32 +1034,160 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
       }
     });
 
+  const selectMentionedMember = (member: RoomMember) => {
+    const u = allUsers.find(user => user.tag === member.user_tag);
+    if (!u) return;
+
+    const beforeMention = inputText.substring(0, mentionStartIndex);
+    const cursorPosition = messageInputRef.current?.selectionStart || 0;
+    const afterMention = inputText.substring(cursorPosition);
+    
+    const newText = `${beforeMention}@${u.tag} ${afterMention}`;
+    setInputText(newText);
+    setShowMentionDropdown(false);
+
+    setTimeout(() => {
+      if (messageInputRef.current) {
+        messageInputRef.current.focus();
+        const newCursorPos = mentionStartIndex + u.tag.length + 2; // +1 for '@', +1 for ' '
+        messageInputRef.current.setSelectionRange(newCursorPos, newCursorPos);
+      }
+    }, 0);
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const text = e.target.value;
+    setInputText(text);
+
+    if (isDirect || !activeTag) {
+      setShowMentionDropdown(false);
+      return;
+    }
+
+    const selectionStart = e.target.selectionStart || 0;
+    
+    let lastAtIndex = -1;
+    for (let i = selectionStart - 1; i >= 0; i--) {
+      if (text[i] === '@') {
+        if (i === 0 || /\s/.test(text[i - 1])) {
+          lastAtIndex = i;
+          break;
+        }
+      }
+      if (/\s/.test(text[i])) {
+        break;
+      }
+    }
+
+    if (lastAtIndex !== -1) {
+      const query = text.substring(lastAtIndex + 1, selectionStart);
+      setMentionStartIndex(lastAtIndex);
+      setMentionSearchQuery(query);
+      setMentionSelectedIndex(0);
+      setShowMentionDropdown(true);
+    } else {
+      setShowMentionDropdown(false);
+    }
+  };
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!showMentionDropdown) return;
+
+    const filtered = members.filter((member) => {
+      const u = allUsers.find(user => user.tag === member.user_tag);
+      if (!u) return false;
+      const q = mentionSearchQuery.toLowerCase();
+      return u.username.toLowerCase().includes(q) || u.tag.toLowerCase().includes(q);
+    });
+
+    if (filtered.length === 0) {
+      if (e.key === 'Escape') {
+        setShowMentionDropdown(false);
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setMentionSelectedIndex((prev) => (prev + 1) % filtered.length);
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setMentionSelectedIndex((prev) => (prev - 1 + filtered.length) % filtered.length);
+        break;
+      case 'Enter':
+      case 'Tab':
+        e.preventDefault();
+        selectMentionedMember(filtered[mentionSelectedIndex]);
+        break;
+      case 'Escape':
+        e.preventDefault();
+        setShowMentionDropdown(false);
+        break;
+      default:
+        break;
+    }
+  };
+
   // Handle send text message
   const handleSendText = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputText.trim()) return;
+    const text = inputText.trim();
+    if (!text) return;
 
-    const messageId = Math.random().toString(36).substring(2, 11);
+    if (replyingToMsgs.length > 0) {
+      replyingToMsgs.forEach((targetMsg) => {
+        const senderName = getMsgSenderName(targetMsg);
+        const parentId = targetMsg.id;
+        let previewText = getMsgPreviewText(targetMsg);
+        previewText = previewText.replace(/\n/g, ' ').substring(0, 60);
+        const finalContent = `💬 Reply to @${senderName} [id:${parentId}]: ${previewText}\n${text}`;
+        const messageId = Math.random().toString(36).substring(2, 11);
 
-    if (isDirect && activeDirectUser) {
-      const msgPayload = {
-        id: messageId,
-        sender_tag: currentUser.tag,
-        receiver_tag: activeDirectUser.tag,
-        msg_type: 'text' as const,
-        content: inputText.trim(),
-      };
-      socket.emit('send_direct_msg', msgPayload);
-    } else if (activeTag) {
-      const msgPayload = {
-        id: messageId,
-        room_tag: activeTag,
-        sender_id: currentUser.tag,
-        sender_name: currentUser.username,
-        msg_type: 'text' as const,
-        content: inputText.trim(),
-      };
-      socket.emit('send_msg', msgPayload);
+        if (isDirect && activeDirectUser) {
+          socket.emit('send_direct_msg', {
+            id: messageId,
+            sender_tag: currentUser.tag,
+            receiver_tag: activeDirectUser.tag,
+            msg_type: 'text' as const,
+            content: finalContent,
+          });
+        } else if (activeTag) {
+          socket.emit('send_msg', {
+            id: messageId,
+            room_tag: activeTag,
+            sender_id: currentUser.tag,
+            sender_name: currentUser.username,
+            msg_type: 'text' as const,
+            content: finalContent,
+          });
+        }
+      });
+      setReplyingToMsgs([]);
+    } else {
+      const messageId = Math.random().toString(36).substring(2, 11);
+      const finalContent = getSendContent(text);
+
+      if (isDirect && activeDirectUser) {
+        socket.emit('send_direct_msg', {
+          id: messageId,
+          sender_tag: currentUser.tag,
+          receiver_tag: activeDirectUser.tag,
+          msg_type: 'text' as const,
+          content: finalContent,
+        });
+      } else if (activeTag) {
+        socket.emit('send_msg', {
+          id: messageId,
+          room_tag: activeTag,
+          sender_id: currentUser.tag,
+          sender_name: currentUser.username,
+          msg_type: 'text' as const,
+          content: finalContent,
+        });
+      }
+      setReplyingToMessage(null);
     }
 
     setInputText('');
@@ -747,6 +1217,8 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
         const uploadData = await res.json();
         const isPhoto = file.type.startsWith('image/');
         const messageId = Math.random().toString(36).substring(2, 11);
+        const rawContent = isPhoto ? 'Sent a photo' : `Sent a file: ${file.name}`;
+        const finalContent = getSendContent(rawContent);
 
         if (isDirect && activeDirectUser) {
           const msgPayload = {
@@ -754,7 +1226,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
             sender_tag: currentUser.tag,
             receiver_tag: activeDirectUser.tag,
             msg_type: (isPhoto ? 'photo' : 'file') as 'photo' | 'file',
-            content: isPhoto ? 'Sent a photo' : `Sent a file: ${file.name}`,
+            content: finalContent,
             file_url: uploadData.url,
             file_name: uploadData.name,
             file_size: uploadData.size,
@@ -767,13 +1239,14 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
             sender_id: currentUser.tag,
             sender_name: currentUser.username,
             msg_type: (isPhoto ? 'photo' : 'file') as 'photo' | 'file',
-            content: isPhoto ? 'Sent a photo' : `Sent a file: ${file.name}`,
+            content: finalContent,
             file_url: uploadData.url,
             file_name: uploadData.name,
             file_size: uploadData.size,
           };
           socket.emit('send_msg', msgPayload);
         }
+        setReplyingToMessage(null);
       }
     } catch (err) {
       console.error('File upload failed', err);
@@ -818,6 +1291,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
           if (res.ok) {
             const uploadData = await res.json();
             const messageId = Math.random().toString(36).substring(2, 11);
+            const finalContent = getSendContent('Voice note');
 
             if (isDirect && activeDirectUser) {
               const msgPayload = {
@@ -825,7 +1299,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                 sender_tag: currentUser.tag,
                 receiver_tag: activeDirectUser.tag,
                 msg_type: 'audio' as const,
-                content: 'Voice note',
+                content: finalContent,
                 file_url: uploadData.url,
                 file_name: 'Voice Note.wav',
                 file_size: uploadData.size,
@@ -838,13 +1312,14 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                 sender_id: currentUser.tag,
                 sender_name: currentUser.username,
                 msg_type: 'audio' as const,
-                content: 'Voice note',
+                content: finalContent,
                 file_url: uploadData.url,
                 file_name: 'Voice Note.wav',
                 file_size: uploadData.size,
               };
               socket.emit('send_msg', msgPayload);
             }
+            setReplyingToMessage(null);
           }
         } catch (err) {
           console.error('Audio upload failed', err);
@@ -1129,97 +1604,32 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                   >
                     {!isOutgoing && !isDirect && <div className="message-sender">{senderName}</div>}
 
-                    {!msg.is_deleted && (
-                      <div className="message-actions" style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        opacity: 0,
-                        transition: 'opacity 0.2s',
-                        marginRight: isOutgoing ? '8px' : '0',
-                        marginLeft: !isOutgoing ? '8px' : '0',
-                        alignSelf: 'center',
-                        order: !isOutgoing ? 1 : 0
-                      }}>
-                        {msg.pinned ? (
-                          ((!isDirect && (userMember?.role === 'admin' || userMember?.role === 'co_admin' || userMember?.role === 'moderator')) || msg.pinned_by === currentUser.tag || (isDirect && (('sender_tag' in msg && msg.sender_tag === currentUser.tag) || ('receiver_tag' in msg && msg.receiver_tag === currentUser.tag)))) && (
-                            <button
-                              onClick={() => handleUnpinMessage(msg.id)}
-                              style={{
-                                background: 'rgba(255,255,255,0.05)',
-                                border: '1px solid var(--border-color)',
-                                borderRadius: '50%',
-                                width: '28px',
-                                height: '28px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                cursor: 'pointer',
-                                color: 'var(--text-main)',
-                                transition: 'all 0.2s'
-                              }}
-                              title="Unpin Message"
-                              className="hover-action-btn"
-                            >
-                              <PinOff size={14} />
-                            </button>
-                          )
-                        ) : (
-                          ((!isDirect && userMember) || isDirect) && (
-                            <button
-                              onClick={() => handlePinMessage(msg.id)}
-                              style={{
-                                background: 'rgba(255,255,255,0.05)',
-                                border: '1px solid var(--border-color)',
-                                borderRadius: '50%',
-                                width: '28px',
-                                height: '28px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                cursor: 'pointer',
-                                color: 'var(--text-muted)',
-                                transition: 'all 0.2s'
-                              }}
-                              title="Pin Message"
-                              className="hover-action-btn"
-                            >
-                              <Pin size={14} />
-                            </button>
-                          )
-                        )}
-                        <button
-                          onClick={() => {
-                            setDeleteMsgData({
-                              id: msg.id,
-                              sender_tag: isDirect ? (msg as DirectMessage).sender_tag : (msg as Message).sender_id,
-                              room_tag: isDirect ? undefined : (msg as Message).room_tag,
-                              receiver_tag: isDirect ? (msg as DirectMessage).receiver_tag : undefined,
-                            });
-                            setShowDeleteModal(true);
+                    <div className="message-bubble-wrapper" style={{ display: 'flex', alignItems: 'center', gap: '12px', width: '100%', justifyContent: isOutgoing ? 'flex-end' : 'flex-start' }}>
+                      {isSelectionModeActive && (
+                        <div 
+                          className={`message-selection-checkbox ${selectedMessageIds.includes(msg.id) ? 'checked' : ''}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleMessageSelection(msg.id);
                           }}
-                          style={{
-                            background: 'rgba(255,255,255,0.05)',
-                            border: '1px solid var(--border-color)',
-                            borderRadius: '50%',
-                            width: '28px',
-                            height: '28px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            cursor: 'pointer',
-                            color: 'var(--accent-glow)',
-                            transition: 'all 0.2s'
-                          }}
-                          title="Delete Message"
-                          className="hover-action-btn"
                         >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    )}
+                          <div className="checkbox-circle">
+                            {selectedMessageIds.includes(msg.id) && <Check size={12} strokeWidth={3} />}
+                          </div>
+                        </div>
+                      )}
 
-                    <div className="message-bubble" style={{ position: 'relative' }}>
+                    <div 
+                      className={`message-bubble ${selectedMessageIds.includes(msg.id) ? 'selected' : ''}`}
+                      style={{ position: 'relative', cursor: isSelectionModeActive ? 'pointer' : 'default' }}
+                      onMouseDown={() => handleMessageTouchStart(msg.id)}
+                      onMouseUp={handleMessageTouchEnd}
+                      onMouseLeave={handleMessageTouchEnd}
+                      onTouchStart={() => handleMessageTouchStart(msg.id)}
+                      onTouchEnd={handleMessageTouchEnd}
+                      onContextMenu={(e) => handleMessageContextMenu(e, msg.id)}
+                      onClick={() => handleMessageClick(msg.id)}
+                    >
                       {/* Pin badge indicator */}
                       {msg.pinned && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', color: 'var(--accent-glow)', marginBottom: '4px', opacity: 0.8 }}>
@@ -1235,22 +1645,81 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                         </div>
                       ) : (
                         <>
-                          {/* 1. Text Message */}
-                          {msg.msg_type === 'text' && <div>{msg.content}</div>}
+                          {(() => {
+                            const { isReply, senderName, messageId, originalText } = parseReplyContent(msg.content);
+                            if (isReply) {
+                              return (
+                                <div
+                                  className="quoted-message-bubble"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (isSelectionModeActive) {
+                                      toggleMessageSelection(msg.id);
+                                    } else {
+                                      handleJumpToMessage(messageId);
+                                    }
+                                  }}
+                                >
+                                  <div className="quoted-sender">@{senderName}</div>
+                                  <div className="quoted-text">{originalText}</div>
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
 
+                          {(() => {
+                            const { isForwarded, originalSender } = parseForwardedContent(msg);
+                            if (isForwarded) {
+                              return (
+                                <div className="forwarded-message-header">
+                                  <CornerUpRight size={10} style={{ color: 'rgba(255, 255, 255, 0.85)' }} />
+                                  <span>Forwarded from @{originalSender}</span>
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
+
+                          {/* 1. Text Message */}
+                          {msg.msg_type === 'text' && <div>{renderMessageContent(getCleanBodyText(msg))}</div>}
+ 
                           {/* 2. Photo Message */}
                           {msg.msg_type === 'photo' && msg.file_url && (
-                            <img
-                              src={getUploadUrl(msg.file_url)}
-                              alt="attachment"
-                              className="media-message-photo"
-                              onClick={() => setSelectedPhoto(getUploadUrl(msg.file_url))}
-                            />
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              <img
+                                src={getUploadUrl(msg.file_url)}
+                                alt="attachment"
+                                className="media-message-photo"
+                                onClick={(e) => {
+                                  if (isSelectionModeActive) {
+                                    e.stopPropagation();
+                                    toggleMessageSelection(msg.id);
+                                  } else {
+                                    setSelectedPhoto(getUploadUrl(msg.file_url));
+                                  }
+                                }}
+                              />
+                              {msg.content && !msg.content.startsWith('Sent a photo') && (
+                                <div style={{ fontSize: '0.85rem', color: 'var(--text-main)', marginTop: '4px' }}>
+                                  {renderMessageContent(getCleanBodyText(msg))}
+                                </div>
+                              )}
+                            </div>
                           )}
 
                           {/* 3. Audio Message (Voice Note) */}
                           {msg.msg_type === 'audio' && msg.file_url && (
-                            <CustomAudioMessage url={getUploadUrl(msg.file_url)} />
+                            <div
+                              onClick={(e) => {
+                                if (isSelectionModeActive) {
+                                  e.stopPropagation();
+                                  toggleMessageSelection(msg.id);
+                                }
+                              }}
+                            >
+                              <CustomAudioMessage url={getUploadUrl(msg.file_url)} />
+                            </div>
                           )}
 
                           {/* 4. File Attachment Message */}
@@ -1261,6 +1730,13 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                               target="_blank"
                               rel="noreferrer"
                               className="media-message-file"
+                              onClick={(e) => {
+                                if (isSelectionModeActive) {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  toggleMessageSelection(msg.id);
+                                }
+                              }}
                             >
                               <div className="file-icon-wrapper">
                                 <FileText size={20} />
@@ -1290,8 +1766,9 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                         )}
                       </div>
                     </div>
-
                   </div>
+
+                </div>
                 </React.Fragment>
               );
             })}
@@ -1300,71 +1777,200 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
 
           {/* Input Panel */}
           <div className="chat-input-panel">
-            {!isDirect && !userMember ? (
+            {isSelectionModeActive ? (
+              <div className="bulk-actions-container" style={{ width: '100%' }}>
+                <div className="bulk-actions-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <div style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--accent-cyan)' }}>
+                    {selectedMessageIds.length} messages selected
+                  </div>
+                  <button 
+                    onClick={() => setSelectedMessageIds([])}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: 'var(--text-muted)',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      fontSize: '0.8rem'
+                    }}
+                  >
+                    <X size={14} /> Clear Selection
+                  </button>
+                </div>
+                <div className="bulk-actions-buttons-row">
+                  {(() => {
+                    const selectedMsgs = getSelectedMessageObjects();
+                    const allSelectedArePinned = selectedMsgs.length > 0 && selectedMsgs.every(m => m.pinned);
+                    return (
+                      <button className="bulk-action-btn pin" onClick={handleBulkPinToggle} title={allSelectedArePinned ? "Unpin Selected" : "Pin Selected"}>
+                        {allSelectedArePinned ? <PinOff size={16} /> : <Pin size={16} />}
+                        <span>{allSelectedArePinned ? 'Unpin' : 'Pin'}</span>
+                      </button>
+                    );
+                  })()}
+                  <button className="bulk-action-btn forward" onClick={handleBulkForwardClick} title="Forward Selected">
+                    <CornerUpRight size={16} />
+                    <span>Forward</span>
+                  </button>
+                  <button className="bulk-action-btn reply" onClick={handleBulkReplyClick} title="Reply Selected">
+                    <CornerUpLeft size={16} />
+                    <span>Reply</span>
+                  </button>
+                  <button className="bulk-action-btn delete" onClick={handleBulkDeleteClick} title="Delete Selected">
+                    <Trash2 size={16} />
+                    <span>Delete</span>
+                  </button>
+                </div>
+              </div>
+            ) : (!isDirect && !userMember ? (
               <div style={{ textAlign: 'center', padding: '16px 0', color: 'var(--text-muted)', fontSize: '0.9rem', width: '100%' }}>
                 You must be a member to send messages to this group. Click "Join Group" above.
               </div>
             ) : (
               <>
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  style={{ display: 'none' }}
-                  onChange={handleFileChange}
-                />
-
-                {isRecording ? (
-                  /* Voice Recording UI */
-                  <div className="recording-bar">
-                    <div className="recording-timer">
-                      <div className="recording-dot"></div>
-                      <span>Recording: {formatTime(recordingTime)}</span>
+                {replyingToMessage && (
+                  <div className="reply-preview-bar">
+                    <div className="reply-preview-content">
+                      <div className="reply-preview-sender">
+                        <CornerUpLeft size={12} style={{ marginRight: '6px' }} />
+                        Replying to {getMsgSenderName(replyingToMessage)}
+                      </div>
+                      <div className="reply-preview-text">
+                        {getMsgPreviewText(replyingToMessage)}
+                      </div>
                     </div>
-                    <button className="recording-cancel" onClick={cancelRecording}>
-                      Cancel
-                    </button>
-                  </div>
-                ) : (
-                  /* Standard Input Buttons */
-                  <div className="chat-input-actions">
-                    <button
-                      className="chat-action-btn"
-                      onClick={handleAttachmentClick}
-                      disabled={isUploading}
-                    >
-                      <Paperclip size={20} />
-                    </button>
-                    <button className="chat-action-btn" onClick={startRecording}>
-                      <Mic size={20} />
+                    <button className="reply-preview-close" onClick={() => setReplyingToMessage(null)}>
+                      <X size={16} />
                     </button>
                   </div>
                 )}
 
-                {/* Input Text Form */}
-                {!isRecording && (
-                  <form onSubmit={handleSendText} className="chat-input-wrapper">
-                    <input
-                      type="text"
-                      placeholder={isUploading ? 'Uploading file...' : 'Type a message...'}
-                      className="chat-input"
-                      value={inputText}
-                      onChange={(e) => setInputText(e.target.value)}
-                      disabled={isUploading}
-                    />
-                    <button type="submit" className="chat-send-btn" style={{ marginLeft: '12px' }}>
+                {replyingToMsgs.length > 0 && (
+                  <div className="reply-preview-bar" style={{ maxHeight: '150px', overflowY: 'auto' }}>
+                    <div className="reply-preview-content" style={{ width: '100%' }}>
+                      <div className="reply-preview-sender" style={{ marginBottom: '6px' }}>
+                        <CornerUpLeft size={12} style={{ marginRight: '6px' }} />
+                        Replying to {replyingToMsgs.length} messages
+                      </div>
+                      <div className="reply-preview-text" style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: '100%' }}>
+                        {replyingToMsgs.map((m) => {
+                          const sender = getMsgSenderName(m);
+                          const preview = getMsgPreviewText(m);
+                          return (
+                            <div key={m.id} style={{ fontSize: '0.8rem', opacity: 0.85, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              <strong>@{sender}:</strong> "{preview}"
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <button className="reply-preview-close" onClick={() => setReplyingToMsgs([])} style={{ alignSelf: 'flex-start', marginTop: '2px' }}>
+                      <X size={16} />
+                    </button>
+                  </div>
+                )}
+
+                {showMentionDropdown && (() => {
+                  const filtered = members.filter((member) => {
+                    const u = allUsers.find(user => user.tag === member.user_tag);
+                    if (!u) return false;
+                    const q = mentionSearchQuery.toLowerCase();
+                    return u.username.toLowerCase().includes(q) || u.tag.toLowerCase().includes(q);
+                  });
+
+                  if (filtered.length === 0) return null;
+
+                  return (
+                    <div className="mention-dropdown">
+                      {filtered.map((member, index) => {
+                        const u = allUsers.find(user => user.tag === member.user_tag);
+                        if (!u) return null;
+                        const isSelected = index === mentionSelectedIndex;
+                        return (
+                          <div
+                            key={member.user_tag}
+                            className={`mention-member-item ${isSelected ? 'active' : ''}`}
+                            onClick={() => selectMentionedMember(member)}
+                          >
+                            <div className="mention-member-avatar">
+                              {u.avatar || '👤'}
+                            </div>
+                            <div className="mention-member-info">
+                              <span className="mention-member-name">{u.username}</span>
+                              <span className="mention-member-tag">@{u.tag}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
+                <div className="chat-input-controls-row">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    style={{ display: 'none' }}
+                    onChange={handleFileChange}
+                  />
+
+                  {isRecording ? (
+                    /* Voice Recording UI */
+                    <div className="recording-bar">
+                      <div className="recording-timer">
+                        <div className="recording-dot"></div>
+                        <span>Recording: {formatTime(recordingTime)}</span>
+                      </div>
+                      <button className="recording-cancel" onClick={cancelRecording}>
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    /* Standard Input Buttons */
+                    <div className="chat-input-actions">
+                      <button
+                        className="chat-action-btn"
+                        onClick={handleAttachmentClick}
+                        disabled={isUploading}
+                      >
+                        <Paperclip size={20} />
+                      </button>
+                      <button className="chat-action-btn" onClick={startRecording}>
+                        <Mic size={20} />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Input Text Form */}
+                  {!isRecording && (
+                    <form onSubmit={handleSendText} className="chat-input-wrapper">
+                      <input
+                        type="text"
+                        ref={messageInputRef}
+                        placeholder={isUploading ? 'Uploading file...' : 'Type a message...'}
+                        className="chat-input"
+                        value={inputText}
+                        onChange={handleInputChange}
+                        onKeyDown={handleInputKeyDown}
+                        disabled={isUploading}
+                      />
+                      <button type="submit" className="chat-send-btn" style={{ marginLeft: '12px' }}>
+                        <Send size={18} />
+                      </button>
+                    </form>
+                  )}
+
+                  {/* Stop Voice note & Send */}
+                  {isRecording && (
+                    <button className="chat-send-btn" onClick={stopRecording}>
                       <Send size={18} />
                     </button>
-                  </form>
-                )}
-
-                {/* Stop Voice note & Send */}
-                {isRecording && (
-                  <button className="chat-send-btn" onClick={stopRecording}>
-                    <Send size={18} />
-                  </button>
-                )}
+                  )}
+                </div>
               </>
-            )}
+            ))}
           </div>
         </div>
 
@@ -1652,8 +2258,40 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                           </div>
                         ) : (
                           <>
+                            {(() => {
+                              const { isReply, senderName, originalText } = parseReplyContent(msg.content);
+                              if (isReply) {
+                                return (
+                                  <div
+                                    className="quoted-message-bubble"
+                                    style={{
+                                      marginBottom: '8px',
+                                      pointerEvents: 'none'
+                                    }}
+                                  >
+                                    <div className="quoted-sender">@{senderName}</div>
+                                    <div className="quoted-text">{originalText}</div>
+                                  </div>
+                                );
+                              }
+                              return null;
+                            })()}
+
+                            {(() => {
+                              const { isForwarded, originalSender } = parseForwardedContent(msg);
+                              if (isForwarded) {
+                                return (
+                                  <div className="forwarded-message-header">
+                                    <CornerUpRight size={10} style={{ color: 'rgba(255, 255, 255, 0.85)' }} />
+                                    <span>Forwarded from @{originalSender}</span>
+                                  </div>
+                                );
+                              }
+                              return null;
+                            })()}
+
                             {msg.msg_type === 'text' && (
-                              <div style={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                              <div style={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>{renderMessageContent(getCleanBodyText(msg))}</div>
                             )}
 
                             {msg.msg_type === 'photo' && msg.file_url && (
@@ -1662,8 +2300,13 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                                   src={getUploadUrl(msg.file_url)}
                                   alt="pinned attachment"
                                   style={{ width: '100%', maxHeight: '120px', objectFit: 'cover', borderRadius: '4px' }}
+                                  onClick={() => setSelectedPhoto(getUploadUrl(msg.file_url))}
                                 />
-                                {msg.content && <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{msg.content}</div>}
+                                {msg.content && !msg.content.startsWith('Sent a photo') && (
+                                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                    {renderMessageContent(getCleanBodyText(msg))}
+                                  </div>
+                                )}
                               </div>
                             )}
 
@@ -2484,6 +3127,134 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                 }}
               >
                 Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showForwardModal && forwardMsgData && (
+        <div className="forward-modal-overlay" onClick={() => { setShowForwardModal(false); setForwardMsgData(null); setBulkForwardMsgs([]); }}>
+          <div className="forward-modal-container" onClick={(e) => e.stopPropagation()}>
+            <div className="forward-modal-header">
+              <h3 className="forward-modal-title">
+                {bulkForwardMsgs.length > 0 ? `Forward ${bulkForwardMsgs.length} Messages` : 'Forward Message'}
+              </h3>
+              <button className="forward-modal-close-btn" onClick={() => { setShowForwardModal(false); setForwardMsgData(null); setBulkForwardMsgs([]); }}>
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Common Search Bar */}
+            <div className="forward-search-wrapper">
+              <Search size={16} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+              <input
+                type="text"
+                placeholder="Search rooms or users..."
+                value={forwardSearchQuery}
+                onChange={(e) => setForwardSearchQuery(e.target.value)}
+                className="forward-search-input"
+              />
+            </div>
+
+            {/* Tabs Switcher: Switch between Groups & DMs */}
+            <div className="forward-tabs-switcher">
+              <button
+                onClick={() => setForwardActiveTab('groups')}
+                className={forwardActiveTab === 'groups' ? 'forward-tab-btn active' : 'forward-tab-btn'}
+              >
+                Groups
+              </button>
+              <button
+                onClick={() => setForwardActiveTab('dms')}
+                className={forwardActiveTab === 'dms' ? 'forward-tab-btn active' : 'forward-tab-btn'}
+              >
+                DMs
+              </button>
+            </div>
+
+            {/* Scrollable list of targets */}
+            <div className="forward-targets-list">
+              {forwardActiveTab === 'groups' ? (
+                rooms
+                  .filter(room => room.name.toLowerCase().includes(forwardSearchQuery.toLowerCase()))
+                  .map(room => {
+                    const isSelected = selectedForwardTargets.includes(room.name);
+                    return (
+                      <div
+                        key={room.name}
+                        onClick={() => {
+                          setSelectedForwardTargets(prev =>
+                            isSelected ? prev.filter(t => t !== room.name) : [...prev, room.name]
+                          );
+                        }}
+                        className={isSelected ? 'forward-target-card selected' : 'forward-target-card'}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <div className="forward-target-avatar" style={{ background: getChannelGradient(room.name), color: 'white', border: 'none' }}>
+                            {getChannelInitials(room.name)}
+                          </div>
+                          <div className="forward-target-info">
+                            <div className="forward-target-name">{room.name}</div>
+                            <div className="forward-target-subtext">{room.description || 'No description'}</div>
+                          </div>
+                        </div>
+                        <div className="forward-custom-checkbox">
+                          <Check size={12} strokeWidth={3} />
+                        </div>
+                      </div>
+                    );
+                  })
+              ) : (
+                allUsers
+                  .filter(user => user.tag !== currentUser.tag && (user.username.toLowerCase().includes(forwardSearchQuery.toLowerCase()) || user.tag.toLowerCase().includes(forwardSearchQuery.toLowerCase())))
+                  .map(user => {
+                    const isSelected = selectedForwardTargets.includes(user.tag);
+                    return (
+                      <div
+                        key={user.tag}
+                        onClick={() => {
+                          setSelectedForwardTargets(prev =>
+                            isSelected ? prev.filter(t => t !== user.tag) : [...prev, user.tag]
+                          );
+                        }}
+                        className={isSelected ? 'forward-target-card selected' : 'forward-target-card'}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <div className="forward-target-avatar user-avatar" style={{ fontSize: '1.4rem', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                            {user.avatar}
+                          </div>
+                          <div className="forward-target-info">
+                            <div className="forward-target-name">{user.username}</div>
+                            <div className="forward-target-subtext">@{user.tag}</div>
+                          </div>
+                        </div>
+                        <div className="forward-custom-checkbox">
+                          <Check size={12} strokeWidth={3} />
+                        </div>
+                      </div>
+                    );
+                  })
+              )}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="forward-footer-actions">
+              <button
+                onClick={() => {
+                  setShowForwardModal(false);
+                  setForwardMsgData(null);
+                }}
+                className="forward-btn-cancel"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleForwardSubmit}
+                disabled={selectedForwardTargets.length === 0}
+                className="forward-btn-submit"
+              >
+                Forward to {selectedForwardTargets.length} {selectedForwardTargets.length === 1 ? 'chat' : 'chats'}
               </button>
             </div>
           </div>
