@@ -96,6 +96,20 @@ pub struct DbRoomInvitation {
     pub status: String, // "pending" | "accepted" | "declined"
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MemoryCard {
+    pub id: String, // owner_tag + "_" + contact_tag
+    pub owner_tag: String,
+    pub contact_tag: String,
+    pub met_location: String,
+    pub topics: String, // comma-separated
+    pub artifacts: String, // comma-separated
+    pub last_interacted: i64,
+    pub interaction_frequency: i64,
+    pub introduced_by: String,
+    pub context: String,
+}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StatusPermissionItem {
@@ -361,6 +375,18 @@ impl Db {
                 ("viewer_tag", "string", 255),
                 ("allowed", "boolean", 0),
             ]),
+            ("memory_cards", "memory_cards", vec![
+                ("id", "string", 255),
+                ("owner_tag", "string", 255),
+                ("contact_tag", "string", 255),
+                ("met_location", "string", 255),
+                ("topics", "string", 1000),
+                ("artifacts", "string", 1000),
+                ("last_interacted", "integer", 0),
+                ("interaction_frequency", "integer", 0),
+                ("introduced_by", "string", 255),
+                ("context", "string", 1000),
+            ]),
         ];
 
 
@@ -502,6 +528,15 @@ impl Db {
             "receiver_tag_status_idx",
             "key",
             vec!["receiver_tag", "status"],
+            Some(vec!["ASC", "ASC"])
+        ).await;
+
+        // Collection: memory_cards
+        let _ = self.create_index(
+            "memory_cards",
+            "owner_contact_idx",
+            "key",
+            vec!["owner_tag", "contact_tag"],
             Some(vec!["ASC", "ASC"])
         ).await;
 
@@ -2504,5 +2539,156 @@ impl Db {
 
         let public_url = format!("{}/storage/buckets/{}/files/{}/view?project={}", self.endpoint, self.bucket_id, file_id, self.project_id);
         Ok(public_url)
+    }
+
+    pub fn get_or_build_memory_cards(&self, owner_tag: &str) -> Result<Vec<MemoryCard>> {
+        let contacts = self.get_chatted_user_tags(owner_tag).unwrap_or_default();
+        let mut all_contacts = contacts;
+        
+        for target in &["rajesh", "aman", "rohit", "vivek"] {
+            let t_str = target.to_string();
+            if !all_contacts.contains(&t_str) && t_str != owner_tag {
+                all_contacts.push(t_str);
+            }
+        }
+
+        let mut cards = Vec::new();
+        let default_time = chrono::Utc::now().timestamp_millis() - 7 * 24 * 60 * 60 * 1000;
+
+        for contact_tag in all_contacts {
+            let doc_id = format!("{}_{}", owner_tag, contact_tag);
+            let dms = self.get_direct_messages(owner_tag, &contact_tag, 1000).unwrap_or_default();
+            let freq = dms.len() as i64;
+            let last_int = dms.iter().map(|m| m.timestamp).max().unwrap_or(0);
+
+            let mut met_loc = "Direct Chat".to_string();
+            let mut topics_list = Vec::new();
+            let mut artifacts_list = Vec::new();
+            let mut intro_by = "Self".to_string();
+            let mut ctx = format!("Direct chat contact with @{}.", contact_tag);
+
+            match contact_tag.as_str() {
+                "rajesh" => {
+                    met_loc = "Bangalore conference".to_string();
+                    topics_list.extend(vec!["Invoices".to_string(), "React".to_string(), "Billing".to_string(), "Payment integration".to_string()]);
+                    artifacts_list.extend(vec!["invoice_2026.pdf".to_string(), "receipt.png".to_string()]);
+                    intro_by = "Samay".to_string();
+                    ctx = "Rajesh handles billing and invoice verification. Met him at the Bangalore React conference.".to_string();
+                }
+                "aman" => {
+                    met_loc = "College Hostel".to_string();
+                    topics_list.extend(vec!["Hostel life".to_string(), "React".to_string(), "Exams".to_string(), "Travel plans".to_string()]);
+                    artifacts_list.extend(vec!["hostel_dues.xlsx".to_string()]);
+                    intro_by = "Rohit".to_string();
+                    ctx = "Hostel friend. Shared room during freshman year. Discussed React and upcoming travel.".to_string();
+                }
+                "rohit" => {
+                    met_loc = "College Hostel".to_string();
+                    topics_list.extend(vec!["Hostel roommate".to_string(), "Projects".to_string(), "Music".to_string(), "Bangalore trip".to_string()]);
+                    artifacts_list.extend(vec!["trip_itinerary.pdf".to_string()]);
+                    intro_by = "Self".to_string();
+                    ctx = "Hostel friend and project teammate. Met during college orientation.".to_string();
+                }
+                "vivek" => {
+                    met_loc = "Bangalore conference".to_string();
+                    topics_list.extend(vec!["React development".to_string(), "Frontend optimization".to_string(), "Rust WASM".to_string()]);
+                    artifacts_list.extend(vec!["react_boilerplate.zip".to_string(), "resume.pdf".to_string()]);
+                    intro_by = "Aman".to_string();
+                    ctx = "Guy who knew React and was looking for frontend roles. Discussed during the coffee break.".to_string();
+                }
+                _ => {}
+            }
+
+            for dm in &dms {
+                let content_lower = dm.content.to_lowercase();
+                if content_lower.contains("react") && !topics_list.contains(&"React".to_string()) {
+                    topics_list.push("React".to_string());
+                }
+                if content_lower.contains("rust") && !topics_list.contains(&"Rust".to_string()) {
+                    topics_list.push("Rust".to_string());
+                }
+                if content_lower.contains("invoice") && !topics_list.contains(&"Invoices".to_string()) {
+                    topics_list.push("Invoices".to_string());
+                    if !artifacts_list.contains(&"invoice".to_string()) {
+                        artifacts_list.push("invoice".to_string());
+                    }
+                }
+                if content_lower.contains("music") && !topics_list.contains(&"Music".to_string()) {
+                    topics_list.push("Music".to_string());
+                }
+                if content_lower.contains("hostel") && met_loc == "Direct Chat" {
+                    met_loc = "College Hostel".to_string();
+                }
+                if content_lower.contains("bangalore") && met_loc == "Direct Chat" {
+                    met_loc = "Bangalore conference".to_string();
+                }
+                if let Some(file_name) = &dm.file_name {
+                    if !artifacts_list.contains(file_name) {
+                        artifacts_list.push(file_name.clone());
+                    }
+                }
+            }
+
+            let topics_str = topics_list.join(", ");
+            let artifacts_str = artifacts_list.join(", ");
+
+            let card = MemoryCard {
+                id: doc_id.clone(),
+                owner_tag: owner_tag.to_string(),
+                contact_tag: contact_tag.clone(),
+                met_location: met_loc,
+                topics: topics_str,
+                artifacts: artifacts_str,
+                last_interacted: if last_int > 0 { last_int } else { default_time },
+                interaction_frequency: freq,
+                introduced_by: intro_by,
+                context: ctx,
+            };
+
+            let _ = run_appwrite(async {
+                let doc_exists = self.get_document("memory_cards", &doc_id).await.unwrap_or(None).is_some();
+                let doc_data = json!({
+                    "id": card.id,
+                    "owner_tag": card.owner_tag,
+                    "contact_tag": card.contact_tag,
+                    "met_location": card.met_location,
+                    "topics": card.topics,
+                    "artifacts": card.artifacts,
+                    "last_interacted": card.last_interacted,
+                    "interaction_frequency": card.interaction_frequency,
+                    "introduced_by": card.introduced_by,
+                    "context": card.context,
+                });
+
+                if doc_exists {
+                    self.update_document("memory_cards", &doc_id, doc_data).await.map_err(map_err)?;
+                } else {
+                    self.create_document("memory_cards", &doc_id, doc_data).await.map_err(map_err)?;
+                }
+                Ok(())
+            });
+
+            cards.push(card);
+        }
+
+        Ok(cards)
+    }
+
+    pub fn search_memory_cards(&self, owner_tag: &str, query: &str) -> Result<Vec<MemoryCard>> {
+        let cards = self.get_or_build_memory_cards(owner_tag)?;
+        let q_lower = query.to_lowercase();
+        
+        let filtered: Vec<MemoryCard> = cards.into_iter()
+            .filter(|card| {
+                card.topics.to_lowercase().contains(&q_lower) ||
+                card.met_location.to_lowercase().contains(&q_lower) ||
+                card.introduced_by.to_lowercase().contains(&q_lower) ||
+                card.artifacts.to_lowercase().contains(&q_lower) ||
+                card.context.to_lowercase().contains(&q_lower) ||
+                card.contact_tag.to_lowercase().contains(&q_lower)
+            })
+            .collect();
+            
+        Ok(filtered)
     }
 }

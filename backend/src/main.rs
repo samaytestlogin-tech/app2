@@ -930,6 +930,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/users/update-profile", post(update_profile_route))
         .route("/api/users/chatted", get(get_chatted_users))
         .route("/api/chats/summary", get(get_chat_summary))
+        .route("/api/memory-cards", get(get_memory_cards))
+        .route("/api/memory-cards/search", get(search_memory_cards_route))
         .route("/api/push/subscribe", post(subscribe_push))
         .route("/api/push/public-key", get(get_push_public_key))
         .nest_service("/uploads", ServeDir::new("uploads"))
@@ -1051,6 +1053,43 @@ async fn get_chat_summary(
     let user_tag = params.get("user_tag").ok_or(StatusCode::BAD_REQUEST)?;
     let summary = state.db.get_chat_summary(user_tag).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(summary))
+}
+
+#[derive(serde::Deserialize)]
+struct MemoryCardQuery {
+    user_tag: String,
+}
+
+#[derive(serde::Deserialize)]
+struct MemorySearchQuery {
+    user_tag: String,
+    query: String,
+}
+
+async fn get_memory_cards(
+    State(state): State<AppState>,
+    Query(params): Query<MemoryCardQuery>,
+) -> Result<Json<Vec<db::MemoryCard>>, StatusCode> {
+    match state.db.get_or_build_memory_cards(&params.user_tag) {
+        Ok(cards) => Ok(Json(cards)),
+        Err(e) => {
+            println!("Error fetching memory cards: {:?}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn search_memory_cards_route(
+    State(state): State<AppState>,
+    Query(params): Query<MemorySearchQuery>,
+) -> Result<Json<Vec<db::MemoryCard>>, StatusCode> {
+    match state.db.search_memory_cards(&params.user_tag, &params.query) {
+        Ok(cards) => Ok(Json(cards)),
+        Err(e) => {
+            println!("Error searching memory cards: {:?}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 async fn upload_file(

@@ -1,0 +1,58 @@
+Launching Firefox...
+Script failed: browserType.launch: Failed to launch the browser process.
+Browser logs:
+
+<launching> /usr/bin/firefox -no-remote -headless -profile /tmp/playwright_firefoxdev_profile-0ea8J6 -juggler-pipe -silent
+<launched> pid=17324
+[pid=17324][err] restorecon: SELinux: Could not get canonical path for /home/samagraparashar/.mozilla/firefox/*/gmp-widevinecdm/* restorecon: No such file or directory.
+[pid=17324][err] *** You are running in headless mode.
+[pid=17324][err] [Parent 17324, Main Thread] WARNING: g_dbus_connection_unregister_object: assertion 'G_IS_DBUS_CONNECTION (connection)' failed: 'glib warning', file /builddir/build/BUILD/firefox-149.0-build/firefox-149.0/toolkit/xre/nsSigHandlers.cpp:201
+[pid=17324][err] 
+[pid=17324][err] (org.mozilla.firefox:17324): GLib-GIO-CRITICAL **: 04:08:17.847: g_dbus_connection_unregister_object: assertion 'G_IS_DBUS_CONNECTION (connection)' failed
+[pid=17324][err] [Parent 17324, Main Thread] WARNING: nsDBusRemoteServer: Unable to unregister root object from within onNameLost!: 'glib warning', file /builddir/build/BUILD/firefox-149.0-build/firefox-149.0/toolkit/xre/nsSigHandlers.cpp:201
+[pid=17324][err] 
+[pid=17324][err] ** (org.mozilla.firefox:17324): WARNING **: 04:08:17.847: nsDBusRemoteServer: Unable to unregister root object from within onNameLost!
+[pid=17324] <process did exit: exitCode=0, signal=null>
+[pid=17324] starting temporary directories cleanup
+Call log:
+  - <launching> /usr/bin/firefox -no-remote -headless -profile /tmp/playwright_firefoxdev_profile-0ea8J6 -juggler-pipe -silent
+  - <launched> pid=17324
+  - [pid=17324][err] restorecon: SELinux: Could not get canonical path for /home/samagraparashar/.mozilla/firefox/*/gmp-widevinecdm/* restorecon: No such file or directory.
+  - [pid=17324][err] *** You are running in headless mode.
+  - [pid=17324][err] [Parent 17324, Main Thread] WARNING: g_dbus_connection_unregister_object: assertion 'G_IS_DBUS_CONNECTION (connection)' failed: 'glib warning', file /builddir/build/BUILD/firefox-149.0-build/firefox-149.0/toolkit/xre/nsSigHandlers.cpp:201
+  - [pid=17324][err]
+  - [pid=17324][err] (org.mozilla.firefox:17324): GLib-GIO-CRITICAL **: 04:08:17.847: g_dbus_connection_unregister_object: assertion 'G_IS_DBUS_CONNECTION (connection)' failed
+  - [pid=17324][err] [Parent 17324, Main Thread] WARNING: nsDBusRemoteServer: Unable to unregister root object from within onNameLost!: 'glib warning', file /builddir/build/BUILD/firefox-149.0-build/firefox-149.0/toolkit/xre/nsSigHandlers.cpp:201
+  - [pid=17324][err]
+  - [pid=17324][err] ** (org.mozilla.firefox:17324): WARNING **: 04:08:17.847: nsDBusRemoteServer: Unable to unregister root object from within onNameLost!
+  - [pid=17324] <process did exit: exitCode=0, signal=null>
+  - [pid=17324] starting temporary directories cleanup
+  - [pid=17324] <gracefully close start>
+  - [pid=17324] <kill>
+  - [pid=17324] <skipped force kill spawnedProcess.killed=false processClosed=true>
+  - [pid=17324] finished temporary directories cleanup
+  - [pid=17324] <gracefully close end>
+
+    at run (/home/samagraparashar/project/app/scratch/check_console_errors.js:5:33)
+    at /home/samagraparashar/project/app/scratch/check_console_errors.js:66:1 {
+  log: [
+    '  - <launching> /usr/bin/firefox -no-remote -headless -profile /tmp/playwright_firefoxdev_profile-0ea8J6 -juggler-pipe -silent',
+    '  - <launched> pid=17324',
+    '  - [pid=17324][err] restorecon: SELinux: Could not get canonical path for /home/samagraparashar/.mozilla/firefox/*/gmp-widevinecdm/* restorecon: No such file or directory.',
+    '  - [pid=17324][err] *** You are running in headless mode.',
+    "  - [pid=17324][err] [Parent 17324, Main Thread] WARNING: g_dbus_connection_unregister_object: assertion 'G_IS_DBUS_CONNECTION (connection)' failed: 'glib warning', file /builddir/build/BUILD/firefox-149.0-build/firefox-149.0/toolkit/xre/nsSigHandlers.cpp:201",
+    '  - [pid=17324][err]',
+    "  - [pid=17324][err] (org.mozilla.firefox:17324): GLib-GIO-CRITICAL **: 04:08:17.847: g_dbus_connection_unregister_object: assertion 'G_IS_DBUS_CONNECTION (connection)' failed",
+    "  - [pid=17324][err] [Parent 17324, Main Thread] WARNING: nsDBusRemoteServer: Unable to unregister root object from within onNameLost!: 'glib warning', file /builddir/build/BUILD/firefox-149.0-build/firefox-149.0/toolkit/xre/nsSigHandlers.cpp:201",
+    '  - [pid=17324][err]',
+    '  - [pid=17324][err] ** (org.mozilla.firefox:17324): WARNING **: 04:08:17.847: nsDBusRemoteServer: Unable to unregister root object from within onNameLost!',
+    '  - [pid=17324] <process did exit: exitCode=0, signal=null>',
+    '  - [pid=17324] starting temporary directories cleanup',
+    '  - [pid=17324] <gracefully close start>',
+    '  - [pid=17324] <kill>',
+    '  - [pid=17324] <skipped force kill spawnedProcess.killed=false processClosed=true>',
+    '  - [pid=17324] finished temporary directories cleanup',
+    '  - [pid=17324] <gracefully close end>'
+  ],
+  name: 'Error'
+}
