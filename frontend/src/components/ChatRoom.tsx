@@ -129,7 +129,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
 
   // Delete message state
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [deleteMsgData, setDeleteMsgData] = useState<{ id: string, sender_tag: string, room_tag?: string, receiver_tag?: string } | null>(null);
+  const [deleteMsgData, setDeleteMsgData] = useState<{ id: string, sender_tag: string, room_tag?: string, receiver_tag?: string, can_delete_for_everyone?: boolean } | null>(null);
 
   // Forward message state
   const [showForwardModal, setShowForwardModal] = useState(false);
@@ -194,6 +194,9 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   };
 
   const parseForwardedContent = (msg: Message | DirectMessage) => {
+    if (msg.is_deleted) {
+      return { isForwarded: false, originalSender: '', body: '[Deleted Message]' };
+    }
     const content = msg.content || '';
     if (content.startsWith('↪️ Forwarded from @')) {
       const firstNewline = content.indexOf('\n');
@@ -267,6 +270,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   };
 
   const getMsgPreviewText = (msg: Message | DirectMessage) => {
+    if (msg.is_deleted) return 'Deleted Message';
     let cleanContent = msg.content || '';
     if (cleanContent.startsWith('💬 Reply to @')) {
       cleanContent = parseReplyContent(cleanContent).body;
@@ -291,6 +295,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   };
 
   const getCleanBodyText = (msg: Message | DirectMessage) => {
+    if (msg.is_deleted) return '';
     let text = msg.content || '';
     const replyParsed = parseReplyContent(text);
     if (replyParsed.isReply) {
@@ -383,23 +388,37 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
 
   const handleBulkPinToggle = () => {
     const msgs = getSelectedMessageObjects();
+    if (msgs.length === 0) return;
+    
     const allPinned = msgs.every(m => m.pinned);
     
-    msgs.forEach((m) => {
-      if (allPinned) {
-        handleUnpinMessage(m.id);
-      } else {
+    if (allPinned) {
+      msgs.forEach((m) => {
+        if (m.pinned) {
+          handleUnpinMessage(m.id);
+        }
+      });
+    } else {
+      const pinMsgs = msgs.filter(m => !m.is_deleted);
+      if (pinMsgs.length === 0) {
+        showAlert && showAlert('Cannot Pin', 'Deleted messages (tombstones) cannot be pinned.');
+        return;
+      }
+      pinMsgs.forEach((m) => {
         if (!m.pinned) {
           handlePinMessage(m.id);
         }
-      }
-    });
+      });
+    }
     setSelectedMessageIds([]);
   };
 
   const handleBulkForwardClick = () => {
-    const msgs = getSelectedMessageObjects();
-    if (msgs.length === 0) return;
+    const msgs = getSelectedMessageObjects().filter(m => !m.is_deleted);
+    if (msgs.length === 0) {
+      showAlert && showAlert('Cannot Forward', 'Deleted messages (tombstones) cannot be forwarded.');
+      return;
+    }
     setBulkForwardMsgs(msgs);
     setForwardMsgData(msgs[0]);
     setSelectedForwardTargets([]);
@@ -426,18 +445,24 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
       return senderTag === currentUser.tag;
     });
     const isAdmin = !isDirect && userMember && (userMember.role === 'admin' || userMember.role === 'co_admin' || userMember.role === 'moderator');
+    const hasTombstones = selectedMsgs.some(m => m.is_deleted);
 
     setDeleteMsgData({
       id: 'bulk',
       sender_tag: (allOwnMessages || isAdmin) ? currentUser.tag : 'other',
       room_tag: isDirect ? undefined : (activeTag || undefined),
       receiver_tag: isDirect ? (activeDirectUser?.tag || undefined) : undefined,
+      can_delete_for_everyone: (allOwnMessages || isAdmin) && !hasTombstones,
     });
     setShowDeleteModal(true);
   };
 
   const handleForwardSubmit = () => {
-    const messagesToForward = bulkForwardMsgs.length > 0 ? bulkForwardMsgs : (forwardMsgData ? [forwardMsgData] : []);
+    const list = isDirect ? directMessages : messages;
+    const rawMsgs = bulkForwardMsgs.length > 0 ? bulkForwardMsgs : (forwardMsgData ? [forwardMsgData] : []);
+    const messagesToForward = rawMsgs
+      .map(m => list.find(item => item.id === m.id) || m)
+      .filter(msg => !msg.is_deleted);
     if (messagesToForward.length === 0 || selectedForwardTargets.length === 0) return;
 
     selectedForwardTargets.forEach((targetTag) => {
@@ -504,6 +529,63 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   };
 
   useEffect(() => {
+    const list = isDirect ? directMessages : messages;
+
+    // 1. Clean selectedMessageIds
+    setSelectedMessageIds((prev) => {
+      if (prev.length === 0) return prev;
+      const filtered = prev.filter((id) => {
+        const msg = list.find((m) => m.id === id);
+        return !!msg;
+      });
+      return filtered.length === prev.length ? prev : filtered;
+    });
+
+    // 2. Clean replyingToMsgs
+    setReplyingToMsgs((prev) => {
+      if (prev.length === 0) return prev;
+      const filtered = prev.filter((m) => {
+        const current = list.find((item) => item.id === m.id);
+        return current && !current.is_deleted;
+      });
+      return filtered.length === prev.length ? prev : filtered;
+    });
+
+    // 3 & 4. Clean bulkForwardMsgs and forwardMsgData in tandem
+    setBulkForwardMsgs((prevBulk) => {
+      const filteredBulk = prevBulk.filter((m) => {
+        const current = list.find((item) => item.id === m.id);
+        return current && !current.is_deleted;
+      });
+
+      setForwardMsgData((prevSingle) => {
+        if (!prevSingle) return null;
+        const currentSingle = list.find((item) => item.id === prevSingle.id);
+        const isSingleDeleted = currentSingle && currentSingle.is_deleted;
+
+        if (prevBulk.length > 0) {
+          if (filteredBulk.length === 0) {
+            setShowForwardModal(false);
+            return null;
+          }
+          if (isSingleDeleted) {
+            return filteredBulk[0];
+          }
+          return prevSingle;
+        } else {
+          if (isSingleDeleted) {
+            setShowForwardModal(false);
+            return null;
+          }
+          return prevSingle;
+        }
+      });
+
+      return filteredBulk;
+    });
+  }, [messages, directMessages, isDirect]);
+
+  useEffect(() => {
     fetchMembers();
   }, [activeTag, isDirect]);
 
@@ -568,11 +650,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
     };
 
     const handleMsgDeleted = (data: { message_id: string; room_tag?: string; receiver_tag?: string; delete_type: string; user_tag: string; deleted_by_role?: string }) => {
-      if (data.delete_type === 'for_everyone') {
-        setPinnedMessages((prev) => prev.map(m => m.id === data.message_id ? { ...m, is_deleted: true, content: '', deleted_by: data.deleted_by_role } : m));
-      } else if (data.delete_type === 'for_me' && data.user_tag === currentUser.tag) {
-        setPinnedMessages((prev) => prev.filter((m) => m.id !== data.message_id));
-      }
+      setPinnedMessages((prev) => prev.filter((m) => m.id !== data.message_id));
     };
 
     socket.on('message_pinned', handleMsgPinned);
@@ -992,6 +1070,10 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   // Filter & Sort pinned messages
   const filteredPins = pinnedMessages
     .filter(msg => {
+      // Filter out deleted messages
+      if (msg.is_deleted) {
+        return false;
+      }
       // Filter out messages deleted for me
       if (msg.deleted_for_me?.split(',').includes(currentUser.tag)) {
         return false;
@@ -1802,26 +1884,37 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                 <div className="bulk-actions-buttons-row">
                   {(() => {
                     const selectedMsgs = getSelectedMessageObjects();
+                    const hasTombstones = selectedMsgs.some(m => m.is_deleted);
+                    if (hasTombstones) {
+                      return (
+                        <button className="bulk-action-btn delete" onClick={handleBulkDeleteClick} title="Delete Selected">
+                          <Trash2 size={16} />
+                          <span>Delete</span>
+                        </button>
+                      );
+                    }
                     const allSelectedArePinned = selectedMsgs.length > 0 && selectedMsgs.every(m => m.pinned);
                     return (
-                      <button className="bulk-action-btn pin" onClick={handleBulkPinToggle} title={allSelectedArePinned ? "Unpin Selected" : "Pin Selected"}>
-                        {allSelectedArePinned ? <PinOff size={16} /> : <Pin size={16} />}
-                        <span>{allSelectedArePinned ? 'Unpin' : 'Pin'}</span>
-                      </button>
+                      <>
+                        <button className="bulk-action-btn pin" onClick={handleBulkPinToggle} title={allSelectedArePinned ? "Unpin Selected" : "Pin Selected"}>
+                          {allSelectedArePinned ? <PinOff size={16} /> : <Pin size={16} />}
+                          <span>{allSelectedArePinned ? 'Unpin' : 'Pin'}</span>
+                        </button>
+                        <button className="bulk-action-btn forward" onClick={handleBulkForwardClick} title="Forward Selected">
+                          <CornerUpRight size={16} />
+                          <span>Forward</span>
+                        </button>
+                        <button className="bulk-action-btn reply" onClick={handleBulkReplyClick} title="Reply Selected">
+                          <CornerUpLeft size={16} />
+                          <span>Reply</span>
+                        </button>
+                        <button className="bulk-action-btn delete" onClick={handleBulkDeleteClick} title="Delete Selected">
+                          <Trash2 size={16} />
+                          <span>Delete</span>
+                        </button>
+                      </>
                     );
                   })()}
-                  <button className="bulk-action-btn forward" onClick={handleBulkForwardClick} title="Forward Selected">
-                    <CornerUpRight size={16} />
-                    <span>Forward</span>
-                  </button>
-                  <button className="bulk-action-btn reply" onClick={handleBulkReplyClick} title="Reply Selected">
-                    <CornerUpLeft size={16} />
-                    <span>Reply</span>
-                  </button>
-                  <button className="bulk-action-btn delete" onClick={handleBulkDeleteClick} title="Delete Selected">
-                    <Trash2 size={16} />
-                    <span>Delete</span>
-                  </button>
                 </div>
               </div>
             ) : (!isDirect && !userMember ? (
@@ -3081,7 +3174,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {/* Only the sender or an admin/moderator can delete for everyone */}
-              {(deleteMsgData.sender_tag === currentUser.tag || (!isDirect && userMember && (userMember.role === 'admin' || userMember.role === 'co_admin' || userMember.role === 'moderator'))) && (
+              {deleteMsgData.can_delete_for_everyone && (
                 <button
                   onClick={() => handleDeleteMessage('for_everyone')}
                   style={{

@@ -2088,10 +2088,18 @@ impl Db {
             let mut is_deleted = doc["is_deleted"].as_bool().unwrap_or(false);
             let mut deleted_for_me = doc["deleted_for_me"].as_str().unwrap_or("").to_string();
             let mut pinned = doc["pinned"].as_bool().unwrap_or(false);
+            let mut content = doc["content"].as_str().unwrap_or("").to_string();
+            let mut file_url = doc.get("file_url").cloned().unwrap_or(serde_json::Value::Null);
+            let mut file_name = doc.get("file_name").cloned().unwrap_or(serde_json::Value::Null);
+            let mut file_size = doc.get("file_size").cloned().unwrap_or(serde_json::Value::Null);
 
             if for_everyone {
                 is_deleted = true;
                 pinned = false;
+                content = "".to_string();
+                file_url = serde_json::Value::Null;
+                file_name = serde_json::Value::Null;
+                file_size = serde_json::Value::Null;
             } else {
                 let mut users: Vec<&str> = deleted_for_me.split(',').filter(|s| !s.is_empty()).collect();
                 if !users.contains(&user_tag) {
@@ -2105,6 +2113,10 @@ impl Db {
                 "deleted_for_me": deleted_for_me,
                 "deleted_by": deleted_by_role,
                 "pinned": pinned,
+                "content": content,
+                "file_url": file_url,
+                "file_name": file_name,
+                "file_size": file_size,
             })).await.map_err(map_err)?;
 
             Ok(())
@@ -2121,10 +2133,18 @@ impl Db {
             let mut is_deleted = doc["is_deleted"].as_bool().unwrap_or(false);
             let mut deleted_for_me = doc["deleted_for_me"].as_str().unwrap_or("").to_string();
             let mut pinned = doc["pinned"].as_bool().unwrap_or(false);
+            let mut content = doc["content"].as_str().unwrap_or("").to_string();
+            let mut file_url = doc.get("file_url").cloned().unwrap_or(serde_json::Value::Null);
+            let mut file_name = doc.get("file_name").cloned().unwrap_or(serde_json::Value::Null);
+            let mut file_size = doc.get("file_size").cloned().unwrap_or(serde_json::Value::Null);
 
             if for_everyone {
                 is_deleted = true;
                 pinned = false;
+                content = "".to_string();
+                file_url = serde_json::Value::Null;
+                file_name = serde_json::Value::Null;
+                file_size = serde_json::Value::Null;
             } else {
                 let mut users: Vec<&str> = deleted_for_me.split(',').filter(|s| !s.is_empty()).collect();
                 if !users.contains(&user_tag) {
@@ -2138,6 +2158,10 @@ impl Db {
                 "deleted_for_me": deleted_for_me,
                 "deleted_by": deleted_by_role,
                 "pinned": pinned,
+                "content": content,
+                "file_url": file_url,
+                "file_name": file_name,
+                "file_size": file_size,
             })).await.map_err(map_err)?;
 
             Ok(())

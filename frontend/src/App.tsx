@@ -857,10 +857,21 @@ function App() {
 
     socket.on('message_deleted', (data: { message_id: string; room_tag?: string; receiver_tag?: string; delete_type: string; user_tag: string; deleted_by_role?: string }) => {
       if (data.delete_type === 'for_everyone') {
+        const wipeFields = {
+          is_deleted: true,
+          content: '',
+          file_url: undefined,
+          file_name: undefined,
+          file_size: undefined,
+          pinned: false,
+          pinned_by: undefined,
+          pinned_at: undefined,
+          deleted_by: data.deleted_by_role,
+        };
         if (data.room_tag) {
-          setMessages((prev) => prev.map(m => m.id === data.message_id ? { ...m, is_deleted: true, content: '', deleted_by: data.deleted_by_role } : m));
+          setMessages((prev) => prev.map(m => m.id === data.message_id ? { ...m, ...wipeFields } : m));
         } else if (data.receiver_tag) {
-          setDirectMessages((prev) => prev.map(m => m.id === data.message_id ? { ...m, is_deleted: true, content: '', deleted_by: data.deleted_by_role } : m));
+          setDirectMessages((prev) => prev.map(m => m.id === data.message_id ? { ...m, ...wipeFields } : m));
         }
       } else if (data.delete_type === 'for_me' && data.user_tag === currentUser.tag) {
         if (data.room_tag) {

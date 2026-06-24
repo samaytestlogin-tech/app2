@@ -60,11 +60,12 @@ async function run() {
       console.log(`Presence Alert: User @${data.tag} is online!`);
     });
 
+    const msgId = `dm_msg_${Math.random().toString(36).substring(2, 7)}`;
     // Step 3: Alice sends a DM to Bob
     setTimeout(() => {
       console.log('Step 3: Alice sending 1-to-1 direct message to Bob...');
       alice.emit('send_direct_msg', {
-        id: 'dm_msg_100',
+        id: msgId,
         sender_tag: 'alice_tag',
         receiver_tag: 'bob_tag',
         msg_type: 'text',
@@ -75,10 +76,10 @@ async function run() {
     // Bob listens for Alice's DM
     bob.on('new_direct_msg', (msg) => {
       console.log('Bob received direct message:', msg.content);
-      if (msg.id === 'dm_msg_100') {
+      if (msg.id === msgId) {
         console.log('Step 4: Bob acknowledging DM seen receipt...');
         bob.emit('direct_msg_seen', {
-          message_id: 'dm_msg_100',
+          message_id: msgId,
           sender_tag: 'alice_tag',
           receiver_tag: 'bob_tag'
         });
@@ -88,7 +89,7 @@ async function run() {
     // Alice listens for Bob's seen confirmation
     alice.on('direct_msg_status_update', (data) => {
       console.log(`Alice received DM status: Msg ${data.id} is now ${data.status}`);
-      if (data.id === 'dm_msg_100' && data.status === 'seen') {
+      if (data.id === msgId && data.status === 'seen') {
         console.log('Step 5: Direct chat status flow verified successfully!');
         
         // Fetch users list from REST API
