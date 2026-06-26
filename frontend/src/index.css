@@ -2682,3 +2682,86 @@ body {
   border-color: rgba(239, 68, 68, 0.35);
   background: rgba(239, 68, 68, 0.08);
 }
+
+/* Responsive sidebar drawer styles for mobile devices */
+@media (max-width: 1024px) {
+  .pinned-sidebar,
+  .shared-media-sidebar {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    z-index: 200 !important;
+    border-left: none !important;
+    background: var(--bg-secondary) !important;
+    backdrop-filter: none !important;
+  }
+}
+.premium-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238e92a8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 14px;
+  padding: 8px 32px 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background-color: var(--bg-secondary);
+  color: var(--text-main);
+  font-weight: 500;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  outline: none;
+  cursor: pointer;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+  color-scheme: dark;
+}
+
+.premium-select:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  background-color: var(--bg-tertiary);
+}
+
+.premium-select:focus {
+  border-color: var(--accent-cyan);
+  background-color: var(--bg-tertiary);
+  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.15);
+}
+
+.premium-select option {
+  background-color: var(--bg-tertiary) !important;
+  color: var(--text-main) !important;
+}
+
+.premium-input {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background-color: var(--bg-secondary);
+  color: var(--text-main);
+  font-size: 0.8rem;
+  outline: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  color-scheme: dark;
+}
+
+.premium-input:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  background-color: var(--bg-tertiary);
+}
+
+.premium-input:focus {
+  border-color: var(--accent-cyan);
+  background-color: var(--bg-tertiary);
+  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.15);
+}
+
+.custom-select-option:hover {
+  background-color: rgba(255, 255, 255, 0.04) !important;
+}

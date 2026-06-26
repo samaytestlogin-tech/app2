@@ -23,6 +23,7 @@ import {
   Lock,
   Key,
   ChevronDown,
+  ChevronRight,
   Check
 } from 'lucide-react';
 import type { User, UserStatus, Room, StatusPermission, RoomInvitation } from '../types';
@@ -72,7 +73,10 @@ interface SidebarProps {
   saveShowCountdown: (val: boolean) => void;
   showConfirm: (title: string, message: string, confirmText?: string, cancelText?: string) => Promise<boolean>;
   showAlert: (title: string, message: string, confirmText?: string) => Promise<boolean>;
+  blockedUsers: string[];
+  saveBlockedUsers: (newBlocked: string[]) => void;
 }
+
 
 const getSpaceColor = (name: string) => {
   const lower = name.toLowerCase();
@@ -189,12 +193,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
   saveShowCountdown,
   showConfirm,
   showAlert,
+  blockedUsers,
+  saveBlockedUsers,
 }) => {
   const AVATAR_OPTIONS = ['🦊', '🐯', '🐼', '🐨', '🐙', '🦄', '🦖', '👽', '👻', '👾', '🦁', '🦉'];
 
   // Profile settings state
   const [showAccountSwitcher, setShowAccountSwitcher] = useState(false);
   const [showEditProfileModal, setShowEditProfileModal] = useState(false);
+  const [showBlockedUsersModal, setShowBlockedUsersModal] = useState(false);
   const [profileName, setProfileName] = useState(currentUser.username);
   const [profileAvatar, setProfileAvatar] = useState(currentUser.avatar);
   const [profileBio, setProfileBio] = useState(currentUser.bio || '');
@@ -2190,6 +2197,51 @@ export const Sidebar: React.FC<SidebarProps> = ({
               Spaces is built on a single-entity model. Your chat history remains singular and secure, even if a conversation shortcut is mapped across multiple relational spaces.
             </div>
 
+            {/* Blocked Users settings group */}
+            <div className="settings-group" style={{ padding: '0 16px 20px 16px' }}>
+              <div 
+                onClick={() => setShowBlockedUsersModal(true)}
+                className="premium-settings-row"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '14px 16px',
+                  background: 'rgba(255, 255, 255, 0.02)',
+                  borderRadius: '12px',
+                  border: '1px solid rgba(255, 255, 255, 0.05)',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease-in-out',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.05)';
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <ShieldAlert size={18} style={{ color: '#ff5c5c' }} />
+                  <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'white' }}>Blocked Users</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ 
+                    fontSize: '0.78rem', 
+                    background: blockedUsers.length > 0 ? '#ff5c5c' : 'rgba(255, 255, 255, 0.08)', 
+                    color: 'white', 
+                    borderRadius: '12px', 
+                    padding: '2px 8px',
+                    fontWeight: 600
+                  }}>
+                    {blockedUsers.length}
+                  </span>
+                  <ChevronRight size={16} style={{ color: 'var(--text-muted)' }} />
+                </div>
+              </div>
+            </div>
+
             {/* Logout button in Profile tab */}
             <div style={{ padding: '0 16px 24px 16px' }}>
               <button
@@ -2438,6 +2490,71 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
             <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'flex-end', background: 'rgba(255, 255, 255, 0.01)' }}>
               <button className="btn-primary" onClick={() => setShowPrivacyModal(false)} style={{ width: 'auto', padding: '10px 24px' }}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Blocked Users Modal */}
+      {showBlockedUsersModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0, 0, 0, 0.7)', backdropFilter: 'blur(8px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 10000, padding: '20px' }}>
+          <div style={{ background: 'var(--glass-bg)', backdropFilter: 'blur(20px)', border: '1px solid var(--border-color)', borderRadius: '16px', width: '100%', maxWidth: '450px', maxHeight: '80vh', display: 'flex', flexDirection: 'column', boxShadow: 'var(--shadow-lg)', overflow: 'hidden' }}>
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 600, color: 'var(--accent-purple)' }}>Blocked Users</h3>
+              <button onClick={() => setShowBlockedUsersModal(false)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '1.5rem', cursor: 'pointer', padding: 0, lineHeight: 1 }}>&times;</button>
+            </div>
+            <div style={{ padding: '16px 20px', fontSize: '0.85rem', color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)' }}>
+              Managed list of users you have blocked. Blocked users cannot message or call you.
+            </div>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {blockedUsers.length > 0 ? (
+                blockedUsers.map(tag => {
+                  const u = allUsers.find(user => user.tag === tag);
+                  return (
+                    <div key={tag} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <span style={{ fontSize: '1.5rem' }}>{u?.avatar || '👤'}</span>
+                        <div>
+                          <div style={{ fontWeight: 500, fontSize: '0.9rem', color: 'white' }}>{u?.username || tag}</div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>@{tag}</div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          const updated = blockedUsers.filter(t => t !== tag);
+                          saveBlockedUsers(updated);
+                        }}
+                        style={{
+                          background: 'rgba(255, 92, 92, 0.1)',
+                          border: '1px solid #ff5c5c',
+                          color: '#ff5c5c',
+                          borderRadius: '8px',
+                          padding: '6px 12px',
+                          fontSize: '0.8rem',
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                          transition: 'all 0.2s'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = '#ff5c5c';
+                          e.currentTarget.style.color = 'white';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = 'rgba(255, 92, 92, 0.1)';
+                          e.currentTarget.style.color = '#ff5c5c';
+                        }}
+                      >
+                        Unblock
+                      </button>
+                    </div>
+                  );
+                })
+              ) : (
+                <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)', fontSize: '0.9rem' }}>No blocked users.</div>
+              )}
+            </div>
+            <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'flex-end', background: 'rgba(255, 255, 255, 0.01)' }}>
+              <button className="btn-primary" onClick={() => setShowBlockedUsersModal(false)} style={{ width: 'auto', padding: '10px 24px' }}>Done</button>
             </div>
           </div>
         </div>

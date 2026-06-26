@@ -2537,6 +2537,16 @@ impl Db {
         Ok(())
     }
 
+    pub fn get_user_settings(&self, tag: &str) -> Option<String> {
+        run_appwrite(async {
+            match self.get_document("users", tag).await.map_err(map_err)? {
+                Some(doc) => Ok(doc.get("settings").and_then(|v| v.as_str()).map(|s| s.to_string())),
+                None => Ok(None),
+            }
+        }).unwrap_or(None)
+    }
+
+
     pub fn upload_file(&self, bytes: &[u8], filename: &str) -> Result<String> {
         let url = format!("{}/storage/buckets/{}/files", self.endpoint, self.bucket_id);
         let form = reqwest::multipart::Form::new()

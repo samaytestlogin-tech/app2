@@ -432,6 +432,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let db = db_for_dm.clone();
                 let reg = reg_for_dm.clone();
                 async move {
+                    if is_blocked(&db, &payload.sender_tag, &payload.receiver_tag)
+                        || is_blocked(&db, &payload.receiver_tag, &payload.sender_tag)
+                    {
+                        println!("Blocked direct message: from {} to {}", payload.sender_tag, payload.receiver_tag);
+                        return;
+                    }
+
                     let mut msg = db::DirectMessage {
                         id: payload.id,
                         sender_tag: payload.sender_tag.clone(),
@@ -611,10 +618,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
 
-            // F. Voice Calling Signaling Handlers
+            let db_for_call = db.clone();
             let reg_for_call = registry.clone();
-            socket.on("call_user", move |_socket: SocketRef, Data(payload): Data<serde_json::Value>| {
+            socket.on("call_user", move |socket: SocketRef, Data(payload): Data<serde_json::Value>| {
                 let reg = reg_for_call.clone();
+                let db = db_for_call.clone();
                 async move {
                     if let (Some(receiver_tag), Some(offer)) = (
                         payload.get("receiver_tag").and_then(|v| v.as_str()),
@@ -623,6 +631,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let caller_tag = payload.get("caller_tag").and_then(|v| v.as_str()).unwrap_or("");
                         let caller_name = payload.get("caller_name").and_then(|v| v.as_str()).unwrap_or("Someone");
                         let caller_avatar = payload.get("caller_avatar").and_then(|v| v.as_str()).unwrap_or("");
+
+                        // Block call signaling if a blocking relationship exists
+                        if is_blocked(&db, caller_tag, receiver_tag) || is_blocked(&db, receiver_tag, caller_tag) {
+                            let _ = socket.emit("call_rejected", &serde_json::json!({
+                                "caller_tag": caller_tag,
+                                "reason": "blocked"
+                            }));
+                            return;
+                        }
 
                         // Trigger Web Push Notification for Call (wakes up receiver PWA)
                         send_web_push(
@@ -1025,8 +1042,14 @@ async fn login(
     }
 }
 
+#[derive(serde::Deserialize)]
+struct GetUsersParams {
+    request_by: Option<String>,
+}
+
 async fn get_users(
     State(state): State<AppState>,
+    Query(params): Query<GetUsersParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let users = state.db.get_all_users().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let reg = state.online_registry.lock().await;
@@ -1034,16 +1057,30 @@ async fn get_users(
     let mut users_with_status = Vec::new();
     for u in users {
         let online = reg.contains_key(&u.tag);
+        let mut blocked_by_them = false;
+
+        if let Some(ref req_by) = params.request_by {
+            if let Some(ref settings_str) = u.settings {
+                if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(settings_str) {
+                    if let Some(blocked_list) = json_val.get("blockedUsers").and_then(|v| v.as_array()) {
+                        blocked_by_them = blocked_list.iter().any(|v| v.as_str() == Some(req_by.as_str()));
+                    }
+                }
+            }
+        }
+
         users_with_status.push(serde_json::json!({
             "tag": u.tag,
             "username": u.name,
             "avatar": u.avatar,
             "online": online,
             "bio": u.bio,
+            "blocked_by_them": blocked_by_them,
         }));
     }
     Ok(Json(serde_json::json!(users_with_status)))
 }
+
 
 async fn update_profile_route(
     State(state): State<AppState>,
@@ -1534,3 +1571,20 @@ async fn get_pinned_direct_messages_route(
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
+
+fn is_blocked(db: &db::Db, user_tag: &str, target_tag: &str) -> bool {
+    if let Ok(users) = db.get_all_users() {
+        if let Some(user) = users.iter().find(|u: &&db::DbUser| u.tag == user_tag) {
+            if let Some(settings_str) = user.settings.as_deref() {
+                if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(settings_str) {
+                    if let Some(blocked_list) = json_val.get("blockedUsers").and_then(|v| v.as_array()) {
+                        return blocked_list.iter().any(|v| v.as_str() == Some(target_tag));
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+

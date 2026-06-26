@@ -37,6 +37,7 @@ function App() {
   const [timerDurationHours, setTimerDurationHours] = useState<number>(24);
   const [warnOnMultiSpace, setWarnOnMultiSpace] = useState<boolean>(true);
   const [showCountdown, setShowCountdown] = useState<boolean>(true);
+  const [blockedUsers, setBlockedUsers] = useState<string[]>([]);
 
   // Custom Dialog state for premium alerts and confirmations
   const [customDialog, setCustomDialog] = useState<{
@@ -174,6 +175,14 @@ function App() {
     } else {
       setShowCountdown(true);
     }
+
+    // Load blocked users
+    const cachedBlocked = localStorage.getItem(`${tag}_blocked_users`);
+    if (cachedBlocked) {
+      setBlockedUsers(JSON.parse(cachedBlocked));
+    } else {
+      setBlockedUsers([]);
+    }
   }, [currentUser]);
 
   const syncSettingsToCloud = () => {
@@ -188,12 +197,23 @@ function App() {
       timerDurationHours: Number(localStorage.getItem(`${tag}_timer_hours`) || 24),
       warnOnMultiSpace: localStorage.getItem(`${tag}_warn_on_multi_space`) !== 'false',
       showCountdown: localStorage.getItem(`${tag}_show_countdown`) !== 'false',
+      blockedUsers: JSON.parse(localStorage.getItem(`${tag}_blocked_users`) || '[]'),
     };
     socket.emit('update_user_settings', {
       user_tag: tag,
       settings: JSON.stringify(payload)
     });
   };
+
+  const saveBlockedUsers = (newBlocked: string[]) => {
+    if (!currentUser) return;
+    setBlockedUsers(newBlocked);
+    localStorage.setItem(`${currentUser.tag}_blocked_users`, JSON.stringify(newBlocked));
+    setTimeout(() => {
+      syncSettingsToCloud();
+    }, 0);
+  };
+
 
   const saveSpaces = (newSpaces: string[]) => {
     if (!currentUser) return;
@@ -369,6 +389,15 @@ function App() {
 
   const initiateCall = async (target: User) => {
     if (!currentUser) return;
+
+    // Guard against calling blocked users
+    const isTargetBlockedByMe = blockedUsers.includes(target.tag);
+    const isTargetBlockedByThem = target.blocked_by_them === true;
+    if (isTargetBlockedByMe || isTargetBlockedByThem) {
+      showAlert('Call Blocked', 'You cannot call or receive calls from this user.');
+      return;
+    }
+
     cleanupCall();
 
     setCallState('calling');
@@ -605,7 +634,11 @@ function App() {
 
   const fetchUsers = async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/users`);
+      const tag = currentUser?.tag;
+      const url = tag 
+        ? `${BACKEND_URL}/api/users?request_by=${encodeURIComponent(tag)}`
+        : `${BACKEND_URL}/api/users`;
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         setAllUsers(data);
@@ -1007,6 +1040,12 @@ function App() {
 
     // E. Voice Call Signaling Listeners
     socket.on('incoming_call', (data: { caller_tag: string; caller_name: string; caller_avatar: string; offer: any }) => {
+      // Guard against blocked users
+      const blockedList = JSON.parse(localStorage.getItem(`${currentUser?.tag}_blocked_users`) || '[]');
+      if (blockedList.includes(data.caller_tag)) {
+        socket.emit('reject_call', { caller_tag: data.caller_tag });
+        return;
+      }
       if (callStateRef.current !== 'idle') {
         socket.emit('reject_call', { caller_tag: data.caller_tag });
         return;
@@ -1238,6 +1277,7 @@ function App() {
               if (cloudSettings.timerDurationHours) localStorage.setItem(`${user.tag}_timer_hours`, String(cloudSettings.timerDurationHours));
               if (cloudSettings.warnOnMultiSpace !== undefined) localStorage.setItem(`${user.tag}_warn_on_multi_space`, String(cloudSettings.warnOnMultiSpace));
               if (cloudSettings.showCountdown !== undefined) localStorage.setItem(`${user.tag}_show_countdown`, String(cloudSettings.showCountdown));
+              if (cloudSettings.blockedUsers !== undefined) localStorage.setItem(`${user.tag}_blocked_users`, JSON.stringify(cloudSettings.blockedUsers));
             } catch (err) {
               console.error("Failed to parse cloud settings", err);
             }
@@ -1537,6 +1577,8 @@ function App() {
         saveShowCountdown={saveShowCountdown}
         showConfirm={showConfirm}
         showAlert={showAlert}
+        blockedUsers={blockedUsers}
+        saveBlockedUsers={saveBlockedUsers}
       />
 
       {(activeTag || activeDirectUser) ? (
@@ -1560,6 +1602,8 @@ function App() {
           allUsers={allUsers}
           showAlert={showAlert}
           onSetActiveTag={setActiveTag}
+          blockedUsers={blockedUsers}
+          saveBlockedUsers={saveBlockedUsers}
         />
       ) : (
         <div className="chat-pane">

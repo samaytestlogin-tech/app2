@@ -4,7 +4,8 @@ import {
   FileText, Download, Play, Pause, Volume2, Phone,
   Settings, Users, ShieldAlert,
   QrCode, UserPlus, Trash2, Pin, PinOff, Search,
-  Share2, Info, Edit3, Sparkles, CornerUpRight, CornerUpLeft
+  Share2, Info, Edit3, Sparkles, CornerUpRight, CornerUpLeft,
+  Globe, Video
 } from 'lucide-react';
 import type { User, Message, DirectMessage, Room, RoomMember, RoomInvitation } from '../types';
 import { socket, getUploadUrl, BACKEND_URL } from '../socket';
@@ -22,6 +23,8 @@ interface ChatRoomProps {
   fetchRooms: () => Promise<void>;
   allUsers: User[];
   onSetActiveTag?: (tag: string | null) => void;
+  blockedUsers: string[];
+  saveBlockedUsers: (newBlocked: string[]) => void;
 }
 
 const formatMessageDate = (timestamp: number) => {
@@ -84,6 +87,122 @@ const cleanRoomName = (name: string) => {
     .join(' ');
 };
 
+interface CustomSelectProps {
+  value: string;
+  onChange: (val: string) => void;
+  options: { value: string; label: string }[];
+  style?: React.CSSProperties;
+}
+
+const CustomSelect: React.FC<CustomSelectProps> = ({ value, onChange, options, style }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const selectedOption = options.find(opt => opt.value === value) || options[0];
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative', width: '100%', ...style }}>
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '8px 12px',
+          borderRadius: '8px',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          background: 'rgba(21, 21, 46, 0.6)',
+          backdropFilter: 'blur(10px)',
+          color: 'var(--text-main)',
+          fontSize: '0.8rem',
+          fontWeight: 500,
+          textAlign: 'left',
+          cursor: 'pointer',
+          outline: 'none',
+          boxShadow: 'inset 0 1px 2px rgba(0, 0, 0, 0.2)',
+          transition: 'all 0.2s ease'
+        }}
+      >
+        <span>{selectedOption ? selectedOption.label : ''}</span>
+        <svg
+          viewBox="0 0 24 24"
+          width="14"
+          height="14"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{
+            transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+            transition: 'transform 0.2s ease',
+            opacity: 0.7
+          }}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {isOpen && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 4px)',
+            left: 0,
+            right: 0,
+            zIndex: 9999,
+            background: '#12122b',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            borderRadius: '8px',
+            boxShadow: '0 10px 25px rgba(0, 0, 0, 0.5)',
+            backdropFilter: 'blur(12px)',
+            padding: '4px',
+            maxHeight: '200px',
+            overflowY: 'auto'
+          }}
+        >
+          {options.map(opt => {
+            const isSelected = opt.value === value;
+            return (
+              <div
+                key={opt.value}
+                onClick={() => {
+                  onChange(opt.value);
+                  setIsOpen(false);
+                }}
+                className="custom-select-option"
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  color: isSelected ? '#a78bfa' : 'var(--text-main)',
+                  fontWeight: isSelected ? 600 : 400,
+                  fontSize: '0.8rem',
+                  cursor: 'pointer',
+                  transition: 'background 0.15s ease'
+                }}
+              >
+                {opt.label}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const ChatRoom: React.FC<ChatRoomProps> = ({
   currentUser,
   activeTag,
@@ -97,6 +216,8 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   fetchRooms,
   allUsers,
   onSetActiveTag,
+  blockedUsers,
+  saveBlockedUsers,
 }) => {
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -123,9 +244,21 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   const [pinnedMessages, setPinnedMessages] = useState<(Message | DirectMessage)[]>([]);
   const [pinSearchQuery, setPinSearchQuery] = useState('');
   const [pinPinnerFilter, setPinPinnerFilter] = useState('');
-  const [pinTypeFilter, setPinTypeFilter] = useState<'all' | 'text' | 'photo' | 'audio' | 'file'>('all');
+  const [pinTypeFilter, setPinTypeFilter] = useState<'all' | 'text' | 'photo' | 'audio' | 'file' | 'link'>('all');
+  const [pinLinkSubtypeFilter, setPinLinkSubtypeFilter] = useState<string>('all');
+  const [pinDocSubtypeFilter, setPinDocSubtypeFilter] = useState<string>('all');
   const [pinSortOrder, setPinSortOrder] = useState<'newest' | 'oldest'>('newest');
   const [pinDateFilter, setPinDateFilter] = useState('');
+
+  // Shared Media state
+  const [showSharedMedia, setShowSharedMedia] = useState(false);
+  const [mediaSearchQuery, setMediaSearchQuery] = useState('');
+  const [mediaSenderFilter, setMediaSenderFilter] = useState('');
+  const [mediaTypeFilter, setMediaTypeFilter] = useState<'all' | 'photo' | 'audio' | 'file' | 'link'>('all');
+  const [mediaLinkSubtypeFilter, setMediaLinkSubtypeFilter] = useState<string>('all');
+  const [mediaDocSubtypeFilter, setMediaDocSubtypeFilter] = useState<string>('all');
+  const [mediaDateFilter, setMediaDateFilter] = useState('');
+  const [mediaSortOrder, setMediaSortOrder] = useState<'newest' | 'oldest'>('newest');
 
   // Delete message state
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -310,18 +443,129 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
     return text;
   };
 
+  const getDocSubtype = (fileName?: string): string => {
+    if (!fileName) return 'other';
+    const ext = fileName.split('.').pop()?.toLowerCase() || '';
+    if (ext === 'pdf') return 'pdf';
+    if (ext === 'docx' || ext === 'doc') return 'docx';
+    if (ext === 'txt') return 'txt';
+    if (ext === 'pptx' || ext === 'ppt') return 'pptx';
+    if (ext === 'odt') return 'odt';
+    if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') return 'excel';
+    return 'other';
+  };
+
+  const getLinkCategoryInfo = (content: string) => {
+    const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+    const match = content.match(urlRegex);
+    if (!match) return { category: 'Website Link', categoryKey: 'website', icon: 'globe', color: 'var(--accent-cyan)' };
+    
+    const url = match[0].toLowerCase();
+    
+    if (url.includes('youtube.com/shorts') || url.includes('youtu.be/shorts')) {
+      return { category: 'YouTube Shorts', categoryKey: 'youtube_shorts', icon: 'youtube', color: '#ff0000' };
+    }
+    if (url.includes('youtube.com') || url.includes('youtu.be')) {
+      return { category: 'YouTube Video', categoryKey: 'youtube_video', icon: 'youtube', color: '#ff0000' };
+    }
+    if (url.includes('instagram.com/reel')) {
+      return { category: 'Instagram Reel', categoryKey: 'instagram_reel', icon: 'instagram', color: '#e1306c' };
+    }
+    if (url.includes('instagram.com/p/') || url.includes('instagram.com/tv/')) {
+      return { category: 'Instagram Post', categoryKey: 'instagram_post', icon: 'instagram', color: '#c13584' };
+    }
+    if (url.includes('instagram.com')) {
+      return { category: 'Instagram Link', categoryKey: 'instagram_post', icon: 'instagram', color: '#c13584' };
+    }
+    if (url.includes('facebook.com') || url.includes('fb.com') || url.includes('fb.watch')) {
+      if (url.includes('/share/r/') || url.includes('/watch') || url.includes('fb.watch') || url.includes('/videos/')) {
+        return { category: 'Facebook Video', categoryKey: 'facebook_video', icon: 'facebook', color: '#1877f2' };
+      }
+      return { category: 'Facebook Post', categoryKey: 'facebook_post', icon: 'facebook', color: '#1877f2' };
+    }
+    if (url.includes('twitter.com') || url.includes('x.com')) {
+      return { category: 'X / Twitter Link', categoryKey: 'twitter', icon: 'twitter', color: '#38bdf8' };
+    }
+    
+    return { category: 'Website Link', categoryKey: 'website', icon: 'globe', color: 'var(--accent-cyan)' };
+  };
+
+  const YoutubeIcon = ({ size = 16, color = 'currentColor' }: { size?: number, color?: string }) => (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z" />
+      <polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02" fill={color} />
+    </svg>
+  );
+
+  const InstagramIcon = ({ size = 16, color = 'currentColor' }: { size?: number, color?: string }) => (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="2" width="20" height="20" rx="5" ry="5" />
+      <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z" />
+      <line x1="17.5" y1="6.5" x2="17.51" y2="6.5" />
+    </svg>
+  );
+
+  const FacebookIcon = ({ size = 16, color = 'currentColor' }: { size?: number, color?: string }) => (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z" />
+    </svg>
+  );
+
+  const TwitterIcon = ({ size = 16, color = 'currentColor' }: { size?: number, color?: string }) => (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M23 3a10.9 10.9 0 0 1-3.14 1.53 4.48 4.48 0 0 0-7.86 3v1A10.66 10.66 0 0 1 3 4s-4 9 5 13a11.64 11.64 0 0 1-7 2c9 5 20 0 20-11.5a4.5 4.5 0 0 0-.08-.83A7.72 7.72 0 0 0 23 3z" />
+    </svg>
+  );
+
+  const renderLinkIcon = (iconName: string, color: string) => {
+    switch (iconName) {
+      case 'youtube':
+        return <YoutubeIcon size={16} color={color} />;
+      case 'instagram':
+        return <InstagramIcon size={16} color={color} />;
+      case 'facebook':
+        return <FacebookIcon size={16} color={color} />;
+      case 'twitter':
+        return <TwitterIcon size={16} color={color} />;
+      default:
+        return <Globe size={16} color={color} />;
+    }
+  };
+
   const renderMessageContent = (text: string) => {
     if (!text) return '';
-    const mentionRegex = /(@\w+)/g;
-    const parts = text.split(mentionRegex);
+    const regex = /(@\w+)|(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+    const parts = text.split(regex);
     if (parts.length === 1) return text;
 
     return parts.map((part, index) => {
+      if (!part) return null;
       if (part.startsWith('@')) {
         return (
           <span key={index} className="chat-mention-tag">
             {part}
           </span>
+        );
+      }
+      const urlRegex = /^(https?:\/\/[^\s]+|www\.[^\s]+)$/i;
+      if (urlRegex.test(part)) {
+        const href = part.toLowerCase().startsWith('http') ? part : `https://${part}`;
+        return (
+          <a
+            key={index}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              color: 'var(--accent-cyan)',
+              textDecoration: 'underline',
+              cursor: 'pointer',
+              wordBreak: 'break-all'
+            }}
+          >
+            {part}
+          </a>
         );
       }
       return part;
@@ -511,6 +755,13 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
   };
 
   const isDirect = activeDirectUser !== null;
+  const directUserFromAllUsers = isDirect && activeDirectUser 
+    ? allUsers.find(u => u.tag === activeDirectUser.tag) 
+    : null;
+  const isBlockedByMe = isDirect && activeDirectUser && blockedUsers.includes(activeDirectUser.tag);
+  const isBlockedByThem = directUserFromAllUsers?.blocked_by_them === true;
+  const isChatBlocked = isBlockedByMe || isBlockedByThem;
+
   const activeRoom = rooms.find(r => r.name === activeTag);
   const isRoomCreator = activeRoom && activeRoom.creator_tag === currentUser.tag;
   const userMember = members.find(m => m.user_tag === currentUser.tag);
@@ -1083,7 +1334,8 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
       // 1. Search Query
       if (pinSearchQuery.trim()) {
         const query = pinSearchQuery.toLowerCase();
-        const contentMatch = msg.content?.toLowerCase().includes(query);
+        const cleanText = getCleanBodyText(msg);
+        const contentMatch = cleanText?.toLowerCase().includes(query);
         const nameMatch = senderName?.toLowerCase().includes(query);
         const fileMatch = msg.file_name?.toLowerCase().includes(query);
         if (!contentMatch && !nameMatch && !fileMatch) return false;
@@ -1095,8 +1347,27 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
       }
 
       // 3. Type Filter
-      if (pinTypeFilter !== 'all' && msg.msg_type !== pinTypeFilter) {
-        return false;
+      if (pinTypeFilter !== 'all') {
+        if (pinTypeFilter === 'link') {
+          const cleanText = getCleanBodyText(msg);
+          const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+)/i;
+          if (!cleanText || !urlRegex.test(cleanText)) {
+            return false;
+          }
+          if (pinLinkSubtypeFilter !== 'all') {
+            const info = getLinkCategoryInfo(cleanText);
+            if (info.categoryKey !== pinLinkSubtypeFilter) {
+              return false;
+            }
+          }
+        } else if (msg.msg_type !== pinTypeFilter) {
+          return false;
+        } else if (pinTypeFilter === 'file' && pinDocSubtypeFilter !== 'all') {
+          const subtype = getDocSubtype(msg.file_name);
+          if (subtype !== pinDocSubtypeFilter) {
+            return false;
+          }
+        }
       }
 
       // 4. Date Filter
@@ -1110,6 +1381,94 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
     })
     .sort((a, b) => {
       if (pinSortOrder === 'newest') {
+        return b.timestamp - a.timestamp;
+      } else {
+        return a.timestamp - b.timestamp;
+      }
+    });
+
+  // Extract shared media messages (photos, audios, files, or text messages containing links)
+  const sharedMediaMessages = activeMessages.filter(msg => {
+    if (msg.is_deleted) return false;
+    if (msg.deleted_for_me?.split(',').includes(currentUser.tag)) return false;
+    
+    // Check if it's a media message (photo/audio/file with file_url)
+    if (msg.msg_type !== 'text' && msg.file_url) return true;
+    
+    // Check if it's a text message containing a URL link
+    if (msg.msg_type === 'text') {
+      const cleanText = getCleanBodyText(msg);
+      if (cleanText) {
+        const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+)/i;
+        return urlRegex.test(cleanText);
+      }
+    }
+    
+    return false;
+  });
+
+  // Get unique media senders
+  const mediaSenders = Array.from(
+    new Set(
+      sharedMediaMessages.map(m => getMsgSenderName(m)).filter(name => !!name)
+    )
+  );
+
+  // Filter & Sort shared media messages
+  const filteredMedia = sharedMediaMessages
+    .filter(msg => {
+      const senderName = getMsgSenderName(msg);
+
+      // 1. Search Query
+      if (mediaSearchQuery.trim()) {
+        const query = mediaSearchQuery.toLowerCase();
+        const cleanText = getCleanBodyText(msg);
+        const contentMatch = cleanText?.toLowerCase().includes(query);
+        const nameMatch = senderName?.toLowerCase().includes(query);
+        const fileMatch = msg.file_name?.toLowerCase().includes(query);
+        if (!contentMatch && !nameMatch && !fileMatch) return false;
+      }
+
+      // 2. Sender Filter
+      if (mediaSenderFilter && senderName !== mediaSenderFilter) {
+        return false;
+      }
+
+      // 3. Type Filter
+      if (mediaTypeFilter !== 'all') {
+        if (mediaTypeFilter === 'link') {
+          const cleanText = getCleanBodyText(msg);
+          const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+)/i;
+          if (msg.msg_type !== 'text' || !cleanText || !urlRegex.test(cleanText)) {
+            return false;
+          }
+          if (mediaLinkSubtypeFilter !== 'all') {
+            const info = getLinkCategoryInfo(cleanText);
+            if (info.categoryKey !== mediaLinkSubtypeFilter) {
+              return false;
+            }
+          }
+        } else if (msg.msg_type !== mediaTypeFilter) {
+          return false;
+        } else if (mediaTypeFilter === 'file' && mediaDocSubtypeFilter !== 'all') {
+          const subtype = getDocSubtype(msg.file_name);
+          if (subtype !== mediaDocSubtypeFilter) {
+            return false;
+          }
+        }
+      }
+
+      // 4. Date Filter
+      if (mediaDateFilter) {
+        const msgDate = new Date(msg.timestamp).toDateString();
+        const filterDate = new Date(mediaDateFilter).toDateString();
+        if (msgDate !== filterDate) return false;
+      }
+
+      return true;
+    })
+    .sort((a, b) => {
+      if (mediaSortOrder === 'newest') {
         return b.timestamp - a.timestamp;
       } else {
         return a.timestamp - b.timestamp;
@@ -1455,93 +1814,101 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
     <div className="chat-pane">
       {/* Header */}
       <div className="chat-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-        <div className="chat-header-info">
+        <div className="chat-header-info" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <button className="mobile-back-btn" onClick={onBackToSidebar}>
             <X size={24} />
           </button>
-          {isDirect ? (
-            <div className="user-avatar" style={{ width: '40px', height: '40px', fontSize: '1.4rem' }}>
-              {activeDirectUser.avatar}
-            </div>
-          ) : (
-            <div className="room-avatar" style={{
-              background: activeTag ? getChannelGradient(activeTag) : 'var(--bg-tertiary)',
-              color: 'white',
-              fontWeight: 700,
-              fontSize: '0.9rem',
-              width: '40px',
-              height: '40px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: '12px',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-              letterSpacing: '0.5px'
-            }}>
-              {activeTag ? getChannelInitials(activeTag) : '#'}
-            </div>
-          )}
-          <div>
-            <div className="chat-header-title">
-              {isDirect ? activeDirectUser.username : cleanRoomName(activeTag || '')}
-            </div>
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-              {isDirect ? (
-                <>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    @{activeDirectUser.tag} •{' '}
-                    <span style={{ color: activeDirectUser.online ? '#2ec4b6' : 'var(--text-muted)' }}>
-                      {activeDirectUser.online ? 'Online' : 'Offline'}
-                    </span>
-                  </span>
-                  {activeDirectUser.bio && (
-                    <div
-                      style={{
-                        fontSize: '0.85rem',
-                        color: 'var(--text-muted)',
-                        display: 'flex',
-                        alignItems: 'flex-start',
-                        gap: '6px',
-                        maxWidth: '500px',
-                        marginTop: '4px',
-                        cursor: 'default',
-                        fontStyle: 'italic'
-                      }}
-                      title={activeDirectUser.bio}
-                    >
-                      <Sparkles size={14} style={{ flexShrink: 0, color: 'var(--text-muted)', marginTop: '2px', opacity: 0.7 }} />
-                      <span style={{
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                        lineHeight: '1.4',
-                        opacity: 0.85
-                      }}>
-                        {activeDirectUser.bio}
+          <div
+            onClick={() => {
+              setShowSharedMedia(!showSharedMedia);
+              setShowPins(false);
+            }}
+            style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer' }}
+          >
+            {isDirect ? (
+              <div className="user-avatar" style={{ width: '40px', height: '40px', fontSize: '1.4rem' }}>
+                {activeDirectUser.avatar}
+              </div>
+            ) : (
+              <div className="room-avatar" style={{
+                background: activeTag ? getChannelGradient(activeTag) : 'var(--bg-tertiary)',
+                color: 'white',
+                fontWeight: 700,
+                fontSize: '0.9rem',
+                width: '40px',
+                height: '40px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: '12px',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                letterSpacing: '0.5px'
+              }}>
+                {activeTag ? getChannelInitials(activeTag) : '#'}
+              </div>
+            )}
+            <div>
+              <div className="chat-header-title">
+                {isDirect ? activeDirectUser.username : cleanRoomName(activeTag || '')}
+              </div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                {isDirect ? (
+                  <>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      @{activeDirectUser.tag} •{' '}
+                      <span style={{ color: activeDirectUser.online ? '#2ec4b6' : 'var(--text-muted)' }}>
+                        {activeDirectUser.online ? 'Online' : 'Offline'}
                       </span>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ color: 'var(--accent-cyan)', fontWeight: 500 }}>#{activeTag?.toLowerCase()}</span>
-                    <span>•</span>
-                    <span>{activeMessages.length} {activeMessages.length === 1 ? 'message' : 'messages'}</span>
-                  </span>
-                  {!isDirect && activeRoom?.description && (
-                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', maxWidth: '350px', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', marginTop: '2px' }} title={activeRoom?.description}>
-                      <Info size={11} style={{ flexShrink: 0, color: 'var(--accent)' }} />
-                      <span>{activeRoom?.description}</span>
                     </span>
-                  )}
-                </>
-              )}
+                    {activeDirectUser.bio && (
+                      <div
+                        style={{
+                          fontSize: '0.85rem',
+                          color: 'var(--text-muted)',
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: '6px',
+                          maxWidth: '500px',
+                          marginTop: '4px',
+                          cursor: 'default',
+                          fontStyle: 'italic'
+                        }}
+                        title={activeDirectUser.bio}
+                      >
+                        <Sparkles size={14} style={{ flexShrink: 0, color: 'var(--text-muted)', marginTop: '2px', opacity: 0.7 }} />
+                        <span style={{
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          lineHeight: '1.4',
+                          opacity: 0.85
+                        }}>
+                          {activeDirectUser.bio}
+                        </span>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ color: 'var(--accent-cyan)', fontWeight: 500 }}>#{activeTag?.toLowerCase()}</span>
+                      <span>•</span>
+                      <span>{activeMessages.length} {activeMessages.length === 1 ? 'message' : 'messages'}</span>
+                    </span>
+                    {!isDirect && activeRoom?.description && (
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', maxWidth: '350px', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', marginTop: '2px' }} title={activeRoom?.description}>
+                        <Info size={11} style={{ flexShrink: 0, color: 'var(--accent)' }} />
+                        <span>{activeRoom?.description}</span>
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {isDirect && activeDirectUser && onStartCall && (
+          {isDirect && activeDirectUser && onStartCall && !isChatBlocked && (
             <button
               className="call-header-btn"
               onClick={() => onStartCall(activeDirectUser)}
@@ -1566,7 +1933,11 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
               <button
                 className={`call-header-btn ${showPins ? 'active' : ''}`}
-                onClick={() => setShowPins(!showPins)}
+                onClick={() => {
+                  const val = !showPins;
+                  setShowPins(val);
+                  if (val) setShowSharedMedia(false);
+                }}
                 title="Pinned Messages & Files"
                 style={{
                   background: showPins ? 'rgba(0, 168, 204, 0.15)' : 'none',
@@ -2001,67 +2372,122 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                   );
                 })()}
 
-                <div className="chat-input-controls-row">
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    style={{ display: 'none' }}
-                    onChange={handleFileChange}
-                  />
-
-                  {isRecording ? (
-                    /* Voice Recording UI */
-                    <div className="recording-bar">
-                      <div className="recording-timer">
-                        <div className="recording-dot"></div>
-                        <span>Recording: {formatTime(recordingTime)}</span>
-                      </div>
-                      <button className="recording-cancel" onClick={cancelRecording}>
-                        Cancel
+                {isChatBlocked ? (
+                  isBlockedByMe ? (
+                    <div style={{
+                      width: '100%',
+                      padding: '12px',
+                      background: 'rgba(255, 92, 92, 0.08)',
+                      border: '1px solid rgba(255, 92, 92, 0.2)',
+                      borderRadius: '10px',
+                      color: '#ff5c5c',
+                      fontSize: '0.85rem',
+                      fontWeight: 500,
+                      textAlign: 'center',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px'
+                    }}>
+                      <span>You have blocked this user.</span>
+                      <button
+                        onClick={() => {
+                          if (activeDirectUser) {
+                            saveBlockedUsers(blockedUsers.filter(t => t !== activeDirectUser.tag));
+                          }
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--accent-cyan)',
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                          textDecoration: 'underline',
+                          padding: 0,
+                          fontSize: '0.85rem'
+                        }}
+                      >
+                        Unblock
                       </button>
                     </div>
                   ) : (
-                    /* Standard Input Buttons */
-                    <div className="chat-input-actions">
-                      <button
-                        className="chat-action-btn"
-                        onClick={handleAttachmentClick}
-                        disabled={isUploading}
-                      >
-                        <Paperclip size={20} />
-                      </button>
-                      <button className="chat-action-btn" onClick={startRecording}>
-                        <Mic size={20} />
-                      </button>
+                    <div style={{
+                      width: '100%',
+                      padding: '12px',
+                      background: 'rgba(255, 255, 255, 0.04)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '10px',
+                      color: 'var(--text-muted)',
+                      fontSize: '0.85rem',
+                      fontWeight: 500,
+                      textAlign: 'center'
+                    }}>
+                      You cannot send messages to this user.
                     </div>
-                  )}
+                  )
+                ) : (
+                  <div className="chat-input-controls-row">
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      style={{ display: 'none' }}
+                      onChange={handleFileChange}
+                    />
 
-                  {/* Input Text Form */}
-                  {!isRecording && (
-                    <form onSubmit={handleSendText} className="chat-input-wrapper">
-                      <input
-                        type="text"
-                        ref={messageInputRef}
-                        placeholder={isUploading ? 'Uploading file...' : 'Type a message...'}
-                        className="chat-input"
-                        value={inputText}
-                        onChange={handleInputChange}
-                        onKeyDown={handleInputKeyDown}
-                        disabled={isUploading}
-                      />
-                      <button type="submit" className="chat-send-btn" style={{ marginLeft: '12px' }}>
+                    {isRecording ? (
+                      /* Voice Recording UI */
+                      <div className="recording-bar">
+                        <div className="recording-timer">
+                          <div className="recording-dot"></div>
+                          <span>Recording: {formatTime(recordingTime)}</span>
+                        </div>
+                        <button className="recording-cancel" onClick={cancelRecording}>
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      /* Standard Input Buttons */
+                      <div className="chat-input-actions">
+                        <button
+                          className="chat-action-btn"
+                          onClick={handleAttachmentClick}
+                          disabled={isUploading}
+                        >
+                          <Paperclip size={20} />
+                        </button>
+                        <button className="chat-action-btn" onClick={startRecording}>
+                          <Mic size={20} />
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Input Text Form */}
+                    {!isRecording && (
+                      <form onSubmit={handleSendText} className="chat-input-wrapper">
+                        <input
+                          type="text"
+                          ref={messageInputRef}
+                          placeholder={isUploading ? 'Uploading file...' : 'Type a message...'}
+                          className="chat-input"
+                          value={inputText}
+                          onChange={handleInputChange}
+                          onKeyDown={handleInputKeyDown}
+                          disabled={isUploading}
+                        />
+                        <button type="submit" className="chat-send-btn" style={{ marginLeft: '12px' }}>
+                          <Send size={18} />
+                        </button>
+                      </form>
+                    )}
+
+                    {/* Stop Voice note & Send */}
+                    {isRecording && (
+                      <button className="chat-send-btn" onClick={stopRecording}>
                         <Send size={18} />
                       </button>
-                    </form>
-                  )}
-
-                  {/* Stop Voice note & Send */}
-                  {isRecording && (
-                    <button className="chat-send-btn" onClick={stopRecording}>
-                      <Send size={18} />
-                    </button>
-                  )}
-                </div>
+                    )}
+                  </div>
+                )}
               </>
             ))}
           </div>
@@ -2146,49 +2572,77 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                 {/* Pinned By Filter */}
                 <div>
                   <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Pinned By</label>
-                  <select
+                  <CustomSelect
                     value={pinPinnerFilter}
-                    onChange={(e) => setPinPinnerFilter(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: '6px',
-                      borderRadius: '6px',
-                      border: '1px solid var(--border-color)',
-                      background: 'var(--bg-secondary)',
-                      color: 'var(--text-main)',
-                      fontSize: '0.8rem'
-                    }}
-                  >
-                    <option value="">All Users</option>
-                    {pinPinners.map(p => (
-                      <option key={p} value={p}>{p}</option>
-                    ))}
-                  </select>
+                    onChange={(val) => setPinPinnerFilter(val)}
+                    options={[
+                      { value: '', label: 'All Users' },
+                      ...pinPinners.map(p => ({ value: p, label: p }))
+                    ]}
+                  />
                 </div>
 
                 {/* Type Filter */}
                 <div>
                   <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Content Type</label>
-                  <select
+                  <CustomSelect
                     value={pinTypeFilter}
-                    onChange={(e) => setPinTypeFilter(e.target.value as any)}
-                    style={{
-                      width: '100%',
-                      padding: '6px',
-                      borderRadius: '6px',
-                      border: '1px solid var(--border-color)',
-                      background: 'var(--bg-secondary)',
-                      color: 'var(--text-main)',
-                      fontSize: '0.8rem'
+                    onChange={(val) => {
+                      setPinTypeFilter(val as any);
+                      setPinLinkSubtypeFilter('all');
+                      setPinDocSubtypeFilter('all');
                     }}
-                  >
-                    <option value="all">All Types</option>
-                    <option value="text">Text Messages</option>
-                    <option value="photo">Photos / Images</option>
-                    <option value="audio">Voice Notes</option>
-                    <option value="file">Shared Files</option>
-                  </select>
+                    options={[
+                      { value: 'all', label: 'All Types' },
+                      { value: 'text', label: 'Text Messages' },
+                      { value: 'photo', label: 'Photos / Images' },
+                      { value: 'audio', label: 'Voice Notes' },
+                      { value: 'file', label: 'Shared Files' },
+                      { value: 'link', label: 'Links / URLs' }
+                    ]}
+                  />
                 </div>
+
+                {pinTypeFilter === 'link' && (
+                  <div style={{ gridColumn: 'span 2', marginTop: '2px' }}>
+                    <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Link Platform</label>
+                    <CustomSelect
+                      value={pinLinkSubtypeFilter}
+                      onChange={(val) => setPinLinkSubtypeFilter(val)}
+                      options={[
+                        { value: 'all', label: 'All Platforms' },
+                        { value: 'youtube_video', label: 'YouTube Video' },
+                        { value: 'youtube_shorts', label: 'YouTube Shorts' },
+                        { value: 'instagram_reel', label: 'Instagram Reel' },
+                        { value: 'instagram_post', label: 'Instagram Post' },
+                        { value: 'facebook_post', label: 'Facebook Post' },
+                        { value: 'facebook_video', label: 'Facebook Video' },
+                        { value: 'twitter', label: 'X / Twitter Link' },
+                        { value: 'website', label: 'Website Link' }
+                      ]}
+                    />
+                  </div>
+                )}
+
+                {pinTypeFilter === 'file' && (
+                  <div style={{ gridColumn: 'span 2', marginTop: '2px' }}>
+                    <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Document Type</label>
+                    <CustomSelect
+                      value={pinDocSubtypeFilter}
+                      onChange={(val) => setPinDocSubtypeFilter(val)}
+                      options={[
+                        { value: 'all', label: 'All Documents' },
+                        { value: 'pdf', label: 'PDF Documents (.pdf)' },
+                        { value: 'docx', label: 'Word Documents (.docx, .doc)' },
+                        { value: 'txt', label: 'Text Files (.txt)' },
+                        { value: 'pptx', label: 'PowerPoint (.pptx, .ppt)' },
+                        { value: 'odt', label: 'OpenDocument (.odt)' },
+                        { value: 'excel', label: 'Spreadsheets (.xlsx, .xls, .csv)' },
+                        { value: 'other', label: 'Other Formats' }
+                      ]}
+                    />
+                  </div>
+                )}
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
@@ -2200,15 +2654,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                       type="date"
                       value={pinDateFilter}
                       onChange={(e) => setPinDateFilter(e.target.value)}
-                      style={{
-                        width: '100%',
-                        padding: '5px',
-                        borderRadius: '6px',
-                        border: '1px solid var(--border-color)',
-                        background: 'var(--bg-secondary)',
-                        color: 'var(--text-main)',
-                        fontSize: '0.8rem'
-                      }}
+                      className="premium-input"
                     />
                   </div>
                 </div>
@@ -2216,33 +2662,27 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                 {/* Sort Order */}
                 <div>
                   <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Sort By</label>
-                  <select
+                  <CustomSelect
                     value={pinSortOrder}
-                    onChange={(e) => setPinSortOrder(e.target.value as any)}
-                    style={{
-                      width: '100%',
-                      padding: '6px',
-                      borderRadius: '6px',
-                      border: '1px solid var(--border-color)',
-                      background: 'var(--bg-secondary)',
-                      color: 'var(--text-main)',
-                      fontSize: '0.8rem'
-                    }}
-                  >
-                    <option value="newest">Newest Pin</option>
-                    <option value="oldest">Oldest Pin</option>
-                  </select>
+                    onChange={(val) => setPinSortOrder(val as any)}
+                    options={[
+                      { value: 'newest', label: 'Newest Pin' },
+                      { value: 'oldest', label: 'Oldest Pin' }
+                    ]}
+                  />
                 </div>
               </div>
 
               {/* Reset Filters Link */}
-              {(pinSearchQuery || pinPinnerFilter || pinTypeFilter !== 'all' || pinDateFilter) && (
+              {(pinSearchQuery || pinPinnerFilter || pinTypeFilter !== 'all' || pinDateFilter || pinLinkSubtypeFilter !== 'all' || pinDocSubtypeFilter !== 'all') && (
                 <button
                   onClick={() => {
                     setPinSearchQuery('');
                     setPinPinnerFilter('');
                     setPinTypeFilter('all');
                     setPinDateFilter('');
+                    setPinLinkSubtypeFilter('all');
+                    setPinDocSubtypeFilter('all');
                   }}
                   style={{
                     background: 'none',
@@ -2500,6 +2940,562 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({
                   );
                 })
               )}
+            </div>
+          </div>
+        )}
+
+        {/* WhatsApp-style Shared Media / Contact/Group Info Drawer */}
+        {showSharedMedia && (
+          <div className="shared-media-sidebar" style={{
+            width: '380px',
+            borderLeft: '1px solid var(--border-color)',
+            background: 'var(--glass-bg)',
+            backdropFilter: 'blur(20px)',
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100%',
+            animation: 'slideInRight 0.3s ease',
+            zIndex: 10
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: '16px 20px',
+              borderBottom: '1px solid var(--border-color)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600, color: 'var(--accent-purple)' }}>
+                  {isDirect ? 'Contact Info' : 'Group Info'}
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowSharedMedia(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  padding: '4px',
+                  borderRadius: '50%'
+                }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Scrollable Content Container */}
+            <div style={{
+              flex: 1,
+              overflowY: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px',
+              paddingBottom: '24px'
+            }}>
+              {/* Profile Card (WhatsApp-style: Avatar, Name, Bio) */}
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                textAlign: 'center',
+                padding: '24px 20px',
+                background: 'rgba(0,0,0,0.15)',
+                borderBottom: '1px solid var(--border-color)',
+                gap: '12px'
+              }}>
+                {/* Avatar */}
+                {isDirect ? (
+                  <div style={{
+                    width: '100px',
+                    height: '100px',
+                    borderRadius: '50%',
+                    background: 'var(--bg-tertiary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '3.5rem',
+                    border: '3px solid var(--accent-purple)',
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+                    userSelect: 'none'
+                  }}>
+                    {activeDirectUser?.avatar}
+                  </div>
+                ) : (
+                  <div style={{
+                    background: activeTag ? getChannelGradient(activeTag) : 'var(--bg-tertiary)',
+                    color: 'white',
+                    fontWeight: 700,
+                    fontSize: '2.5rem',
+                    width: '100px',
+                    height: '100px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: '24px',
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+                    letterSpacing: '1px',
+                    userSelect: 'none'
+                  }}>
+                    {activeTag ? getChannelInitials(activeTag) : '#'}
+                  </div>
+                )}
+
+                {/* Name */}
+                <div>
+                  <h2 style={{ fontSize: '1.4rem', fontWeight: 600, color: 'var(--text-main)', margin: 0 }}>
+                    {isDirect ? activeDirectUser?.username : cleanRoomName(activeTag || '')}
+                  </h2>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    {isDirect ? (
+                      activeDirectUser && (
+                        <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                          @{activeDirectUser.tag} •{' '}
+                          <span style={{ color: activeDirectUser.online ? '#2ec4b6' : 'var(--text-muted)', fontWeight: 500 }}>
+                            {activeDirectUser.online ? 'Online' : 'Offline'}
+                          </span>
+                        </span>
+                      )
+                    ) : (
+                      <span>Group • {members.length} members</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Bio / Description */}
+                {(isDirect || activeRoom?.description) && (
+                  <div style={{
+                    width: '100%',
+                    background: 'rgba(255,255,255,0.02)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '12px',
+                    padding: '12px 14px',
+                    marginTop: '8px',
+                    textAlign: 'left'
+                  }}>
+                    <div style={{
+                      fontSize: '0.7rem',
+                      fontWeight: 600,
+                      textTransform: 'uppercase',
+                      color: 'var(--accent-purple)',
+                      marginBottom: '6px',
+                      letterSpacing: '0.05em'
+                    }}>
+                      {isDirect ? 'About / Bio' : 'Group Description'}
+                    </div>
+                    <div style={{
+                      fontSize: '0.85rem',
+                      color: 'var(--text-main)',
+                      lineHeight: '1.45',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word'
+                    }}>
+                      {isDirect ? (activeDirectUser?.bio || 'Hey there! I am using this app.') : activeRoom?.description}
+                    </div>
+                  </div>
+                )}
+
+                {/* Block/Unblock Button */}
+                {isDirect && activeDirectUser && (
+                  <button
+                    onClick={() => {
+                      if (isBlockedByMe) {
+                        saveBlockedUsers(blockedUsers.filter(t => t !== activeDirectUser.tag));
+                      } else {
+                        saveBlockedUsers([...blockedUsers, activeDirectUser.tag]);
+                      }
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      background: isBlockedByMe ? 'rgba(46, 196, 182, 0.1)' : 'rgba(255, 92, 92, 0.1)',
+                      border: isBlockedByMe ? '1px solid #2ec4b6' : '1px solid #ff5c5c',
+                      color: isBlockedByMe ? '#2ec4b6' : '#ff5c5c',
+                      borderRadius: '10px',
+                      fontSize: '0.85rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      marginTop: '12px',
+                      transition: 'all 0.2s',
+                    }}
+                  >
+                    {isBlockedByMe ? `Unblock @${activeDirectUser.tag}` : `Block @${activeDirectUser.tag}`}
+                  </button>
+                )}
+              </div>
+
+
+              {/* Shared Files & Audios Section */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '0 20px' }}>
+                <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <FileText size={16} style={{ color: 'var(--accent-cyan)' }} />
+                  Shared Media & Files ({filteredMedia.length})
+                </h4>
+
+                {/* Search & Filters */}
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '10px',
+                  background: 'rgba(0,0,0,0.1)',
+                  borderRadius: '12px',
+                  padding: '12px',
+                  border: '1px solid var(--border-color)'
+                }}>
+                  {/* Search Bar */}
+                  <div style={{ position: 'relative' }}>
+                    <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                    <input
+                      type="text"
+                      placeholder="Search media & files..."
+                      value={mediaSearchQuery}
+                      onChange={(e) => setMediaSearchQuery(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px 8px 32px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--border-color)',
+                        background: 'rgba(255,255,255,0.03)',
+                        color: 'var(--text-main)',
+                        fontSize: '0.85rem'
+                      }}
+                    />
+                  </div>
+
+                  {/* Multi-row filters */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    {/* Shared By Filter */}
+                    <div>
+                      <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Shared By</label>
+                      <CustomSelect
+                        value={mediaSenderFilter}
+                        onChange={(val) => setMediaSenderFilter(val)}
+                        options={[
+                          { value: '', label: 'All Users' },
+                          ...mediaSenders.map(s => ({ value: s, label: s }))
+                        ]}
+                      />
+                    </div>
+
+                    {/* Media Type Filter */}
+                    <div>
+                      <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Type</label>
+                      <CustomSelect
+                        value={mediaTypeFilter}
+                        onChange={(val) => {
+                          setMediaTypeFilter(val as any);
+                          setMediaLinkSubtypeFilter('all');
+                          setMediaDocSubtypeFilter('all');
+                        }}
+                        options={[
+                          { value: 'all', label: 'All Types' },
+                          { value: 'photo', label: 'Photos' },
+                          { value: 'audio', label: 'Voice Notes' },
+                          { value: 'file', label: 'Documents / Files' },
+                          { value: 'link', label: 'Links / URLs' }
+                        ]}
+                      />
+                    </div>
+
+                    {mediaTypeFilter === 'link' && (
+                      <div style={{ gridColumn: 'span 2', marginTop: '2px' }}>
+                        <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Link Platform</label>
+                        <CustomSelect
+                          value={mediaLinkSubtypeFilter}
+                          onChange={(val) => setMediaLinkSubtypeFilter(val)}
+                          options={[
+                            { value: 'all', label: 'All Platforms' },
+                            { value: 'youtube_video', label: 'YouTube Video' },
+                            { value: 'youtube_shorts', label: 'YouTube Shorts' },
+                            { value: 'instagram_reel', label: 'Instagram Reel' },
+                            { value: 'instagram_post', label: 'Instagram Post' },
+                            { value: 'facebook_post', label: 'Facebook Post' },
+                            { value: 'facebook_video', label: 'Facebook Video' },
+                            { value: 'twitter', label: 'X / Twitter Link' },
+                            { value: 'website', label: 'Website Link' }
+                          ]}
+                        />
+                      </div>
+                    )}
+
+                    {mediaTypeFilter === 'file' && (
+                      <div style={{ gridColumn: 'span 2', marginTop: '2px' }}>
+                        <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Document Type</label>
+                        <CustomSelect
+                          value={mediaDocSubtypeFilter}
+                          onChange={(val) => setMediaDocSubtypeFilter(val)}
+                          options={[
+                            { value: 'all', label: 'All Documents' },
+                            { value: 'pdf', label: 'PDF Documents (.pdf)' },
+                            { value: 'docx', label: 'Word Documents (.docx, .doc)' },
+                            { value: 'txt', label: 'Text Files (.txt)' },
+                            { value: 'pptx', label: 'PowerPoint (.pptx, .ppt)' },
+                            { value: 'odt', label: 'OpenDocument (.odt)' },
+                            { value: 'excel', label: 'Spreadsheets (.xlsx, .xls, .csv)' },
+                            { value: 'other', label: 'Other Formats' }
+                          ]}
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    {/* Date Filter */}
+                    <div>
+                      <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Date</label>
+                      <input
+                        type="date"
+                        value={mediaDateFilter}
+                        onChange={(e) => setMediaDateFilter(e.target.value)}
+                        className="premium-input"
+                      />
+                    </div>
+
+                    {/* Sort Order */}
+                    <div>
+                      <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Sort By</label>
+                      <CustomSelect
+                        value={mediaSortOrder}
+                        onChange={(val) => setMediaSortOrder(val as any)}
+                        options={[
+                          { value: 'newest', label: 'Newest First' },
+                          { value: 'oldest', label: 'Oldest First' }
+                        ]}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Reset Filters Link */}
+                  {(mediaSearchQuery || mediaSenderFilter || mediaTypeFilter !== 'all' || mediaDateFilter || mediaLinkSubtypeFilter !== 'all' || mediaDocSubtypeFilter !== 'all') && (
+                    <button
+                      onClick={() => {
+                        setMediaSearchQuery('');
+                        setMediaSenderFilter('');
+                        setMediaTypeFilter('all');
+                        setMediaDateFilter('');
+                        setMediaLinkSubtypeFilter('all');
+                        setMediaDocSubtypeFilter('all');
+                      }}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: 'var(--accent-cyan)',
+                        cursor: 'pointer',
+                        fontSize: '0.75rem',
+                        textAlign: 'left',
+                        padding: 0,
+                        alignSelf: 'flex-start'
+                      }}
+                    >
+                      Clear Filters
+                    </button>
+                  )}
+                </div>
+
+                {/* Media List */}
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                  marginTop: '4px'
+                }}>
+                  {filteredMedia.length === 0 ? (
+                    <div style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '30px 10px',
+                      color: 'var(--text-muted)',
+                      textAlign: 'center',
+                      background: 'rgba(255,255,255,0.01)',
+                      border: '1px dashed var(--border-color)',
+                      borderRadius: '12px',
+                      gap: '8px'
+                    }}>
+                      <FileText size={24} style={{ opacity: 0.3 }} />
+                      <div style={{ fontSize: '0.85rem', fontWeight: 500 }}>No shared media found</div>
+                      <div style={{ fontSize: '0.75rem' }}>Shared files, photos, or voice notes will appear here.</div>
+                    </div>
+                  ) : (
+                    filteredMedia.map((msg) => {
+                      const senderName = getMsgSenderName(msg);
+                      return (
+                        <div
+                          key={msg.id}
+                          style={{
+                            background: 'rgba(255, 255, 255, 0.02)',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '12px',
+                            padding: '12px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '8px',
+                            transition: 'transform 0.2s, background-color 0.2s',
+                            cursor: 'pointer'
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.04)';
+                            e.currentTarget.style.transform = 'translateY(-2px)';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.02)';
+                            e.currentTarget.style.transform = 'translateY(0)';
+                          }}
+                          onClick={() => handleJumpToMessage(msg.id)}
+                        >
+                          {/* Sender Info & Date */}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ fontWeight: 600, fontSize: '0.8rem', color: 'var(--accent-purple)' }}>
+                              {senderName}
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                              {new Date(msg.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                            </div>
+                          </div>
+
+                          {/* Content rendering based on msg_type */}
+                          <div style={{
+                            background: 'rgba(0,0,0,0.15)',
+                            padding: '8px',
+                            borderRadius: '8px',
+                            borderLeft: '3px solid var(--accent-purple)'
+                          }}>
+                            {msg.msg_type === 'photo' && msg.file_url && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                <img
+                                  src={getUploadUrl(msg.file_url)}
+                                  alt="shared attachment"
+                                  style={{ width: '100%', maxHeight: '120px', objectFit: 'cover', borderRadius: '6px' }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedPhoto(getUploadUrl(msg.file_url));
+                                  }}
+                                />
+                                {msg.content && !msg.content.startsWith('Sent a photo') && (
+                                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {getCleanBodyText(msg)}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {msg.msg_type === 'audio' && msg.file_url && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  🔊 Voice Note
+                                </div>
+                                <audio 
+                                  src={getUploadUrl(msg.file_url)} 
+                                  controls 
+                                  style={{ width: '100%', height: '32px' }} 
+                                  onClick={(e) => e.stopPropagation()} 
+                                />
+                              </div>
+                            )}
+
+                            {msg.msg_type === 'file' && msg.file_url && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                <div style={{
+                                  background: 'rgba(139, 92, 246, 0.1)',
+                                  color: 'var(--accent-purple)',
+                                  padding: '8px',
+                                  borderRadius: '6px'
+                                }}>
+                                  <FileText size={18} />
+                                </div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {msg.file_name}
+                                  </div>
+                                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                    {msg.file_size ? `${(msg.file_size / 1024).toFixed(1)} KB` : 'Unknown size'}
+                                  </div>
+                                </div>
+                                <a
+                                  href={getUploadUrl(msg.file_url)}
+                                  download={msg.file_name}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    color: 'var(--text-main)',
+                                    padding: '6px',
+                                    borderRadius: '50%',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                  }}
+                                >
+                                  <Download size={14} />
+                                </a>
+                              </div>
+                            )}
+
+                            {msg.msg_type === 'text' && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                {(() => {
+                                  const cleanText = getCleanBodyText(msg);
+                                  const info = getLinkCategoryInfo(cleanText);
+                                  return (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                      <div style={{
+                                        background: `${info.color}15`,
+                                        color: info.color,
+                                        padding: '5px',
+                                        borderRadius: '5px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center'
+                                      }}>
+                                        {renderLinkIcon(info.icon, info.color)}
+                                      </div>
+                                      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+                                        {info.category}
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
+                                <div style={{ fontSize: '0.8rem', color: 'var(--text-main)', wordBreak: 'break-word', lineHeight: '1.4' }}>
+                                  {(() => {
+                                    const cleanText = getCleanBodyText(msg);
+                                    const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+                                    const parts = cleanText.split(urlRegex);
+                                    return parts.map((part, i) => {
+                                      if (urlRegex.test(part) || (part.toLowerCase().startsWith('www.') && !part.startsWith('http'))) {
+                                        const href = part.toLowerCase().startsWith('http') ? part : `https://${part}`;
+                                        return (
+                                          <a
+                                            key={i}
+                                            href={href}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            onClick={(e) => e.stopPropagation()}
+                                            style={{ color: 'var(--accent-cyan)', textDecoration: 'underline' }}
+                                          >
+                                            {part}
+                                          </a>
+                                        );
+                                      }
+                                      return part;
+                                    });
+                                  })()}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         )}

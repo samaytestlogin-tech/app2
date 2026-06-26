@@ -122,16 +122,16 @@ async function run() {
 
       // Verify room history content is purged
       console.log(`\n--- Test 5: Verify the message content and file fields are purged in history ---`);
-      let historyReceived = null;
-      alice.once('room_history', (data) => {
-        historyReceived = data;
+      let historyReceived = await new Promise((resolve) => {
+        alice.once('room_history', (data) => {
+          resolve(data);
+        });
+        alice.emit('join_room', {
+          room_tag: roomTag,
+          user_id: 'tomb_alice',
+          username: 'Alice Tombstone',
+        });
       });
-      alice.emit('join_room', {
-        room_tag: roomTag,
-        user_id: 'tomb_alice',
-        username: 'Alice Tombstone',
-      });
-      await new Promise(r => setTimeout(r, 2000));
 
       const deletedMsg = historyReceived.find(m => m.id === msgId);
       if (!deletedMsg) {
