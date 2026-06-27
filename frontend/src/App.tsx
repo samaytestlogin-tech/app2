@@ -5,8 +5,10 @@ import { StatusFeed } from './components/StatusFeed';
 import { CustomDialog } from './components/CustomDialog';
 import type { User, Message, DirectMessage, UserStatus, Room } from './types';
 import { socket, BACKEND_URL } from './socket';
-import { Phone, PhoneOff, Mic, MicOff, Eye, EyeOff } from 'lucide-react';
+import { Phone, PhoneOff, Mic, MicOff, Eye, EyeOff, Settings } from 'lucide-react';
 import { CallAudioEffects } from './utils/audioSynth';
+import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
 
 const AVATAR_OPTIONS = ['🦊', '🐯', '🐼', '🐨', '🐙', '🦄', '🦖', '👽', '👻', '👾', '🦁', '🦉'];
 
@@ -21,6 +23,8 @@ function App() {
   const [selectedAvatar, setSelectedAvatar] = useState(AVATAR_OPTIONS[0]);
   const [authError, setAuthError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [showServerSettings, setShowServerSettings] = useState(false);
+  const [serverUrlInput, setServerUrlInput] = useState(BACKEND_URL);
 
   // Layout & Channels State
   const [activeTab, setActiveTab] = useState<'chats' | 'groups' | 'spaces' | 'activity' | 'profile'>('chats');
@@ -294,24 +298,47 @@ function App() {
 
   const statusUpdatesRef = useRef<Record<string, 'sent' | 'delivered' | 'seen'>>({});
 
-  const triggerNotification = (title: string, body: string, tag?: string) => {
-    if ('Notification' in window && Notification.permission === 'granted') {
-      const options = {
-        body,
-        icon: '/icons/icon-192.png',
-        badge: '/favicon.svg',
-        tag: tag || 'antigravity-message',
-        renotify: true,
-      };
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.ready.then((reg) => {
-          reg.showNotification(title, options).catch((err) => {
-            console.error('ServiceWorker showNotification failed:', err);
-            new Notification(title, options);
-          });
+  const triggerNotification = async (title: string, body: string, tag?: string) => {
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const perm = await LocalNotifications.checkPermissions();
+        if (perm.display !== 'granted') {
+          const req = await LocalNotifications.requestPermissions();
+          if (req.display !== 'granted') return;
+        }
+        await LocalNotifications.schedule({
+          notifications: [
+            {
+              title,
+              body,
+              id: Math.floor(Math.random() * 100000),
+              sound: 'default',
+              extra: { tag: tag || 'antigravity-message' }
+            }
+          ]
         });
-      } else {
-        new Notification(title, options);
+      } catch (err) {
+        console.error('LocalNotifications failed:', err);
+      }
+    } else {
+      if ('Notification' in window && Notification.permission === 'granted') {
+        const options = {
+          body,
+          icon: '/icons/icon-192.png',
+          badge: '/favicon.svg',
+          tag: tag || 'antigravity-message',
+          renotify: true,
+        };
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.ready.then((reg) => {
+            reg.showNotification(title, options).catch((err) => {
+              console.error('ServiceWorker showNotification failed:', err);
+              new Notification(title, options);
+            });
+          });
+        } else {
+          new Notification(title, options);
+        }
       }
     }
   };
@@ -535,7 +562,11 @@ function App() {
   };
 
   useEffect(() => {
-    if ('Notification' in window && Notification.permission === 'default') {
+    if (Capacitor.isNativePlatform()) {
+      LocalNotifications.requestPermissions().catch(err => {
+        console.error('Failed to request LocalNotifications permission:', err);
+      });
+    } else if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
     }
 
@@ -1395,7 +1426,38 @@ function App() {
   if (!currentUser) {
     return (
       <div className="auth-container">
-        <div className="auth-card">
+        <div className="auth-card" style={{ position: 'relative' }}>
+          <button 
+            type="button"
+            className="auth-settings-btn"
+            style={{
+              position: 'absolute',
+              top: '16px',
+              right: '16px',
+              background: 'none',
+              border: 'none',
+              color: 'var(--text-muted)',
+              cursor: 'pointer',
+              padding: '8px',
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'background-color 0.2s, color 0.2s',
+            }}
+            onClick={() => setShowServerSettings(true)}
+            title="Configure Server Endpoint"
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
+              e.currentTarget.style.color = 'var(--text-color)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = 'transparent';
+              e.currentTarget.style.color = 'var(--text-muted)';
+            }}
+          >
+            <Settings size={20} />
+          </button>
           <div className="auth-logo">Antigravity</div>
           <div className="auth-subtitle">Secure, Realtime Tags & Messaging</div>
           
@@ -1522,6 +1584,80 @@ function App() {
             </button>
           </form>
         </div>
+
+        {showServerSettings && (
+          <div 
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: 'rgba(0, 0, 0, 0.75)',
+              backdropFilter: 'blur(10px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1000,
+            }}
+          >
+            <div 
+              className="auth-card" 
+              style={{ 
+                width: '90%', 
+                maxWidth: '400px', 
+                padding: '24px', 
+                position: 'relative' 
+              }}
+            >
+              <h3 style={{ margin: '0 0 8px 0', fontSize: '1.25rem' }}>Server Configuration</h3>
+              <p style={{ margin: '0 0 20px 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                Set the backend endpoint address. For Android compilation, configure this to your Render URL or local machine's IP.
+              </p>
+              
+              <div className="form-group" style={{ marginBottom: '20px' }}>
+                <label className="form-label">Server URL</label>
+                <input
+                  type="url"
+                  placeholder="https://your-backend.onrender.com"
+                  className="form-input"
+                  value={serverUrlInput}
+                  onChange={(e) => setServerUrlInput(e.target.value)}
+                  required
+                />
+              </div>
+              
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ padding: '8px 16px', background: 'none', border: '1px solid var(--border-color)', borderRadius: '8px', cursor: 'pointer', color: 'var(--text-color)' }}
+                  onClick={() => {
+                    setShowServerSettings(false);
+                    setServerUrlInput(BACKEND_URL);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  style={{ padding: '8px 16px', borderRadius: '8px', border: 'none', cursor: 'pointer' }}
+                  onClick={() => {
+                    const trimmedUrl = serverUrlInput.trim().replace(/\/$/, '');
+                    if (trimmedUrl) {
+                      localStorage.setItem('custom_backend_url', trimmedUrl);
+                      setShowServerSettings(false);
+                      window.location.reload();
+                    }
+                  }}
+                >
+                  Save & Connect
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
