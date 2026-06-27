@@ -5,7 +5,7 @@ import {
   Settings, Users, ShieldAlert,
   QrCode, UserPlus, Trash2, Pin, PinOff, Search,
   Share2, Info, Edit3, Sparkles, CornerUpRight, CornerUpLeft,
-  Globe, Video
+  Globe
 } from 'lucide-react';
 import type { User, Message, DirectMessage, Room, RoomMember, RoomInvitation } from '../types';
 import { socket, getUploadUrl, BACKEND_URL } from '../socket';

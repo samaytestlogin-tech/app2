@@ -5,6 +5,7 @@ export interface User {
   online?: boolean;
   bio?: string;
   settings?: string;
+  blocked_by_them?: boolean;
 }
 
 export interface Message {
