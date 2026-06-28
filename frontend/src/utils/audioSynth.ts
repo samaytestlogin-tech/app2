@@ -65,62 +65,62 @@ export class CallAudioEffects {
     this.intervalId = setInterval(playPulse, 6000);
   }
 
-  // Ring Tone: Incoming Ring (warbling/modulated 400Hz + 450Hz) playing 2s ON, 4s OFF
+  // Ring Tone: Incoming Ring - Plays a premium, sweet chime arpeggio
   public playRingTone() {
     this.stop();
     this.initCtx();
     if (!this.ctx) return;
 
-    const playPulse = () => {
+    const playMelody = () => {
       if (!this.ctx) return;
-      const osc1 = this.ctx.createOscillator();
-      const osc2 = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-
-      // Low frequency modulation (warbling sound)
-      osc1.frequency.value = 400;
-      osc2.frequency.value = 450;
-
-      // Pulse volume (2s on, 4s off)
-      gain.gain.setValueAtTime(0, this.ctx.currentTime);
-      gain.gain.linearRampToValueAtTime(0.2, this.ctx.currentTime + 0.05);
       
-      // Tremolo/modulation effect using Gain scheduling
-      for (let t = 0.1; t < 2.0; t += 0.25) {
-        gain.gain.setValueAtTime(0.2, this.ctx.currentTime + t);
-        gain.gain.linearRampToValueAtTime(0.05, this.ctx.currentTime + t + 0.12);
-        gain.gain.linearRampToValueAtTime(0.2, this.ctx.currentTime + t + 0.25);
-      }
-
-      gain.gain.setValueAtTime(0.2, this.ctx.currentTime + 1.95);
-      gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 2.0);
-
-      osc1.connect(gain);
-      osc2.connect(gain);
-      gain.connect(this.ctx.destination);
-
-      osc1.start();
-      osc2.start();
-
-      const item1 = { osc: osc1, gain };
-      const item2 = { osc: osc2, gain };
-      this.oscillators.push(item1, item2);
-
-      // Clean up after 2 seconds
-      setTimeout(() => {
-        try {
-          osc1.stop();
-          osc2.stop();
-          osc1.disconnect();
-          osc2.disconnect();
-          gain.disconnect();
-        } catch (e) {}
-        this.oscillators = this.oscillators.filter(o => o.osc !== osc1 && o.osc !== osc2);
-      }, 2100);
+      const now = this.ctx.currentTime;
+      
+      // Chime notes: E5, G5, A5, B5, E6, B5
+      const notes = [659.25, 783.99, 880.00, 987.77, 1318.51, 987.77];
+      const noteDelay = 0.15; // 150ms between notes
+      
+      notes.forEach((freq, index) => {
+        if (!this.ctx) return;
+        
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        
+        // Triangle wave for sweet, soft chime/marimba timbre
+        osc.type = 'triangle';
+        osc.frequency.value = freq;
+        
+        const startTime = now + (index * noteDelay);
+        const duration = 0.4; // 400ms duration per note
+        
+        // Volume envelope: fast attack, exponential decay for chime sound
+        gain.gain.setValueAtTime(0, startTime);
+        gain.gain.linearRampToValueAtTime(0.25, startTime + 0.03); // quick rise
+        gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration); // smooth decay
+        
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        
+        osc.start(startTime);
+        osc.stop(startTime + duration);
+        
+        const item = { osc, gain };
+        this.oscillators.push(item);
+        
+        // Clean up oscillator references later
+        setTimeout(() => {
+          try {
+            osc.disconnect();
+            gain.disconnect();
+          } catch (e) {}
+          this.oscillators = this.oscillators.filter(o => o.osc !== osc);
+        }, (index * noteDelay + duration + 0.5) * 1000);
+      });
     };
 
-    playPulse();
-    this.intervalId = setInterval(playPulse, 6000);
+    playMelody();
+    // Loop the melody every 1.6 seconds
+    this.intervalId = setInterval(playMelody, 1600);
   }
 
   public stop() {

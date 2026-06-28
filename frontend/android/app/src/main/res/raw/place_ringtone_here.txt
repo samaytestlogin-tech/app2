@@ -1,0 +1,2 @@
+Please place a valid audio file (e.g. ringtone.mp3 or ringtone.ogg) named exactly "ringtone.mp3" or "ringtone.ogg" in this folder.
+This will be used as the high-priority ringtone for incoming calls when the app is completely closed or in the background.

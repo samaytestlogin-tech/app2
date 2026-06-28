@@ -187,6 +187,8 @@ struct AppState {
     db: db::Db,
     online_registry: Arc<Mutex<HashMap<String, SocketRef>>>,
     #[allow(dead_code)]
+    pending_calls: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    #[allow(dead_code)]
     io: SocketIo,
 }
 
@@ -205,9 +207,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let db = db::Db::init("chat.db")?;
     let online_registry = Arc::new(Mutex::new(HashMap::new()));
+    let pending_calls = Arc::new(Mutex::new(HashMap::new()));
     let app_state = AppState {
         db: db.clone(),
         online_registry: online_registry.clone(),
+        pending_calls: pending_calls.clone(),
         io: io.clone(),
     };
 
@@ -220,26 +224,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let db_clone = db.clone();
     let registry_clone = online_registry.clone();
+    let pending_calls_clone = pending_calls.clone();
     io.ns("/", move |socket: SocketRef| {
         let db = db_clone.clone();
         let registry = registry_clone.clone();
+        let pending_calls = pending_calls_clone.clone();
         async move {
             println!("Socket connected: {}", socket.id);
 
             // A. Register Socket Event (maps unique tag to socket)
             let reg_clone = registry.clone();
             let db_for_reg = db.clone();
+            let pending_calls_for_reg = pending_calls.clone();
             socket.on("register_socket", move |socket: SocketRef, Data(payload): Data<serde_json::Value>| {
                 let reg = reg_clone.clone();
                 let db = db_for_reg.clone();
+                let pending_calls = pending_calls_for_reg.clone();
                 async move {
                     if let Some(user_tag) = payload.get("user_tag").and_then(|t| t.as_str()) {
                         let tag = user_tag.to_string();
                         println!("Registering socket ID {} for User tag {}", socket.id, tag);
                         
+                        // Capture FCM token if provided
+                        if let Some(fcm_token) = payload.get("fcm_token").and_then(|t| t.as_str()) {
+                            if !fcm_token.is_empty() {
+                                println!("Saving FCM token for User tag {}", tag);
+                                let _ = save_fcm_token(&tag, fcm_token);
+                            }
+                        }
+
                         let mut r = reg.lock().await;
                         r.insert(tag.clone(), socket.clone());
                         let _ = socket.join(tag.clone());
+                        
+                        // Check for pending calls
+                        let mut pc = pending_calls.lock().await;
+                        if let Some(call_payload) = pc.remove(&tag) {
+                            println!("Delivering pending call to newly registered socket for User {}", tag);
+                            let _ = socket.emit("incoming_call", &call_payload);
+                        }
                         
                         // Broadcast online notification
                         let _ = socket.broadcast().emit("user_online", &serde_json::json!({ "tag": tag })).await;
@@ -620,9 +643,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let db_for_call = db.clone();
             let reg_for_call = registry.clone();
+            let pending_calls_for_call = pending_calls.clone();
             socket.on("call_user", move |socket: SocketRef, Data(payload): Data<serde_json::Value>| {
                 let reg = reg_for_call.clone();
                 let db = db_for_call.clone();
+                let pending_calls = pending_calls_for_call.clone();
                 async move {
                     if let (Some(receiver_tag), Some(offer)) = (
                         payload.get("receiver_tag").and_then(|v| v.as_str()),
@@ -655,9 +680,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             })
                         );
 
+                        // Trigger Native Android FCM Push (wakes up native app even if killed)
+                        send_fcm_notification(
+                            receiver_tag,
+                            caller_name,
+                            caller_tag,
+                            caller_avatar
+                        );
                         let r = reg.lock().await;
                         if let Some(target_socket) = r.get(receiver_tag) {
                             let _ = target_socket.emit("incoming_call", &serde_json::json!({
+                                "caller_tag": caller_tag,
+                                "caller_name": caller_name,
+                                "caller_avatar": caller_avatar,
+                                "offer": offer
+                            }));
+                        } else {
+                            // If recipient is offline (app closed), save payload in pending calls
+                            let mut pc = pending_calls.lock().await;
+                            pc.insert(receiver_tag.to_string(), serde_json::json!({
                                 "caller_tag": caller_tag,
                                 "caller_name": caller_name,
                                 "caller_avatar": caller_avatar,
@@ -688,10 +729,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             let reg_for_reject = registry.clone();
+            let pending_calls_for_reject = pending_calls.clone();
             socket.on("reject_call", move |_socket: SocketRef, Data(payload): Data<serde_json::Value>| {
                 let reg = reg_for_reject.clone();
+                let pending_calls = pending_calls_for_reject.clone();
                 async move {
                     if let Some(caller_tag) = payload.get("caller_tag").and_then(|v| v.as_str()) {
+                        let mut pc = pending_calls.lock().await;
+                        pc.remove(caller_tag);
+                        if let Some(receiver_tag) = payload.get("receiver_tag").and_then(|v| v.as_str()) {
+                            pc.remove(receiver_tag);
+                        }
+
                         let r = reg.lock().await;
                         if let Some(target_socket) = r.get(caller_tag) {
                             let _ = target_socket.emit("call_rejected", &serde_json::json!({
@@ -703,10 +752,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             let reg_for_end = registry.clone();
+            let pending_calls_for_end = pending_calls.clone();
             socket.on("end_call", move |_socket: SocketRef, Data(payload): Data<serde_json::Value>| {
                 let reg = reg_for_end.clone();
+                let pending_calls = pending_calls_for_end.clone();
                 async move {
                     if let Some(target_tag) = payload.get("target_tag").and_then(|v| v.as_str()) {
+                        let mut pc = pending_calls.lock().await;
+                        pc.remove(target_tag);
+                        if let Some(caller_tag) = payload.get("caller_tag").and_then(|v| v.as_str()) {
+                            pc.remove(caller_tag);
+                        }
+
                         let r = reg.lock().await;
                         if let Some(target_socket) = r.get(target_tag) {
                             let _ = target_socket.emit("call_ended", &serde_json::json!({}));
@@ -1416,6 +1473,96 @@ fn send_web_push(receiver_tag: &str, title: &str, body: &str, data_type: &str, e
                     eprintln!("Failed to send push notification to {}: {:?}", receiver, other);
                 }
             }
+        }
+    });
+}
+
+fn save_fcm_token(user_tag: &str, fcm_token: &str) -> Result<(), rusqlite::Error> {
+    let conn = rusqlite::Connection::open("push_subscriptions.db")?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS fcm_tokens (
+            user_tag TEXT PRIMARY KEY,
+            fcm_token TEXT
+        )",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR REPLACE INTO fcm_tokens (user_tag, fcm_token) VALUES (?1, ?2)",
+        [user_tag, fcm_token],
+    )?;
+    Ok(())
+}
+
+fn get_fcm_token(user_tag: &str) -> Result<Option<String>, rusqlite::Error> {
+    let conn = rusqlite::Connection::open("push_subscriptions.db")?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS fcm_tokens (
+            user_tag TEXT PRIMARY KEY,
+            fcm_token TEXT
+        )",
+        [],
+    )?;
+    let mut stmt = conn.prepare("SELECT fcm_token FROM fcm_tokens WHERE user_tag = ?1")?;
+    let mut rows = stmt.query([user_tag])?;
+    if let Some(row) = rows.next()? {
+        let token: String = row.get(0)?;
+        Ok(Some(token))
+    } else {
+        Ok(None)
+    }
+}
+
+fn send_fcm_notification(receiver_tag: &str, caller_name: &str, caller_tag: &str, caller_avatar: &str) {
+    let receiver = receiver_tag.to_string();
+    let caller_name = caller_name.to_string();
+    let caller_tag = caller_tag.to_string();
+    let caller_avatar = caller_avatar.to_string();
+
+    tokio::task::spawn(async move {
+        // 1. Get the FCM token for the receiver
+        if let Ok(Some(fcm_token)) = get_fcm_token(&receiver) {
+            // 2. Get the FCM server key from environment variable
+            let fcm_server_key = std::env::var("FCM_SERVER_KEY").unwrap_or_default();
+            if fcm_server_key.is_empty() {
+                println!("FCM_SERVER_KEY is not set in environment. Skipping FCM push.");
+                return;
+            }
+
+            println!("Sending high-priority FCM push to user: {} (token: {})", receiver, fcm_token);
+
+            let client = reqwest::Client::new();
+            let payload = serde_json::json!({
+                "to": fcm_token,
+                "priority": "high",
+                "data": {
+                    "type": "incoming_call",
+                    "caller_name": caller_name,
+                    "caller_tag": caller_tag,
+                    "caller_avatar": caller_avatar
+                }
+            });
+
+            match client.post("https://fcm.googleapis.com/fcm/send")
+                .header("Authorization", format!("key={}", fcm_server_key))
+                .header("Content-Type", "application/json")
+                .json(&payload)
+                .send()
+                .await 
+            {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if let Ok(text) = resp.text().await {
+                        println!("FCM send response status: {}. Body: {}", status, text);
+                    } else {
+                        println!("FCM send response status: {}", status);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to send FCM notification: {:?}", e);
+                }
+            }
+        } else {
+            println!("No FCM token found for user: {}", receiver);
         }
     });
 }

@@ -296,9 +296,18 @@ function App() {
     }
   }, [allUsers, chattedUserTags]);
 
+  const activeTagRef = useRef<string | null>(null);
+  const activeDirectUserRef = useRef<User | null>(null);
+  useEffect(() => {
+    activeTagRef.current = activeTag;
+  }, [activeTag]);
+  useEffect(() => {
+    activeDirectUserRef.current = activeDirectUser;
+  }, [activeDirectUser]);
+
   const statusUpdatesRef = useRef<Record<string, 'sent' | 'delivered' | 'seen'>>({});
 
-  const triggerNotification = async (title: string, body: string, tag?: string) => {
+  const triggerNotification = async (title: string, body: string, tag?: string, extra?: any) => {
     if (Capacitor.isNativePlatform()) {
       try {
         const perm = await LocalNotifications.checkPermissions();
@@ -311,9 +320,10 @@ function App() {
             {
               title,
               body,
-              id: Math.floor(Math.random() * 100000),
+              id: tag === 'antigravity-call' ? 42 : Math.floor(Math.random() * 100000),
               sound: 'default',
-              extra: { tag: tag || 'antigravity-message' }
+              actionTypeId: tag === 'antigravity-call' ? 'antigravity-call' : undefined,
+              extra: { tag: tag || 'antigravity-message', ...(extra || {}) }
             }
           ]
         });
@@ -365,6 +375,7 @@ function App() {
   const audioIntervalRef = useRef<any>(null);
   const audioEffectsRef = useRef<CallAudioEffects | null>(null);
   const incomingOfferRef = useRef<any>(null);
+  const autoAcceptRef = useRef<boolean>(false);
 
   const setCallState = (state: CallState) => {
     callStateRef.current = state;
@@ -798,6 +809,118 @@ function App() {
     }
   }, [currentUser]);
 
+  // Check native AndroidCallBridge for incoming calls/actions on startup or new intent
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const checkIncomingCallIntent = () => {
+      if (typeof window !== 'undefined' && (window as any).AndroidCallBridge) {
+        try {
+          const tag = (window as any).AndroidCallBridge.getIncomingCallTag();
+          const action = (window as any).AndroidCallBridge.getIncomingCallAction();
+          if (tag) {
+            console.log("Native call trigger matched caller:", tag, "action:", action);
+            if (action === 'accept') {
+              if (incomingOfferRef.current) {
+                acceptCall(tag);
+              } else {
+                autoAcceptRef.current = true;
+                setCallState('ringing');
+                setCallUserTag(tag);
+                const caller = allUsersRef.current.find(u => u.tag === tag);
+                setCallUserName(caller ? caller.username : `User @${tag}`);
+                setCallUserAvatar(caller ? (caller.avatar || '🦊') : '🦊');
+              }
+            } else if (action === 'decline') {
+              socket.emit('reject_call', { caller_tag: tag });
+              setCallState('idle');
+            } else {
+              // Standard notification click (open screen)
+              setCallState('ringing');
+              setCallUserTag(tag);
+              const caller = allUsersRef.current.find(u => u.tag === tag);
+              setCallUserName(caller ? caller.username : `User @${tag}`);
+              setCallUserAvatar(caller ? (caller.avatar || '🦊') : '🦊');
+            }
+          }
+        } catch (e) {
+          console.error('Error checking native call intent', e);
+        }
+      }
+    };
+
+    // Check immediately
+    checkIncomingCallIntent();
+
+    // Listen to JS custom event dispatched by MainActivity.java
+    const handleNativeCallReceived = () => {
+      checkIncomingCallIntent();
+    };
+    
+    window.addEventListener('nativeCallReceived' as any, handleNativeCallReceived);
+    return () => {
+      window.removeEventListener('nativeCallReceived' as any, handleNativeCallReceived);
+    };
+  }, [currentUser]);
+
+  // Register local notification action types and action click listener
+  useEffect(() => {
+    if (Capacitor.isNativePlatform()) {
+      LocalNotifications.registerActionTypes({
+        types: [
+          {
+            id: 'antigravity-call',
+            actions: [
+              {
+                id: 'answer',
+                title: 'Answer',
+                foreground: true,
+              },
+              {
+                id: 'decline',
+                title: 'Decline',
+                foreground: false,
+                destructive: true,
+              }
+            ]
+          }
+        ]
+      }).catch(err => console.error('Failed to register notification actions', err));
+
+      const handleAction = (notificationAction: any) => {
+        console.log('Local notification action clicked:', notificationAction);
+        const actionId = notificationAction.actionId;
+        const callerTag = notificationAction.notification?.extra?.caller_tag;
+
+        if (actionId === 'answer') {
+          if (callerTag) {
+            if (incomingOfferRef.current) {
+              acceptCall(callerTag);
+            } else {
+              autoAcceptRef.current = true;
+              setCallState('ringing');
+              setCallUserTag(callerTag);
+              const caller = allUsersRef.current.find(u => u.tag === callerTag);
+              setCallUserName(caller ? caller.username : `User @${callerTag}`);
+              setCallUserAvatar(caller ? (caller.avatar || '🦊') : '🦊');
+            }
+          } else {
+            acceptCall();
+          }
+        } else if (actionId === 'decline') {
+          socket.emit('reject_call', { caller_tag: callerTag || callUserTag || '' });
+          setCallState('idle');
+        }
+      };
+
+      LocalNotifications.addListener('localNotificationActionPerformed', handleAction);
+
+      return () => {
+        LocalNotifications.removeAllListeners();
+      };
+    }
+  }, [currentUser, callUserTag]);
+
   // Socket event handlers
   useEffect(() => {
     if (!currentUser) return;
@@ -808,7 +931,16 @@ function App() {
 
     const handleConnect = () => {
       console.log('Socket connected, registering user tag:', currentUser.tag);
-      socket.emit('register_socket', { user_tag: currentUser.tag });
+      let fcmToken = '';
+      if (typeof window !== 'undefined' && (window as any).AndroidCallBridge) {
+        try {
+          fcmToken = (window as any).AndroidCallBridge.getFCMToken() || '';
+          console.log('Retrieved FCM Device Token via AndroidCallBridge:', fcmToken);
+        } catch (e) {
+          console.error('Error fetching FCM token from bridge:', e);
+        }
+      }
+      socket.emit('register_socket', { user_tag: currentUser.tag, fcm_token: fcmToken });
     };
 
     if (socket.connected) {
@@ -851,7 +983,7 @@ function App() {
         [msg.room_tag]: msg.timestamp,
       }));
 
-      const isCurrentActiveRoom = msg.room_tag === activeTag;
+      const isCurrentActiveRoom = msg.room_tag === activeTagRef.current;
 
       if (isCurrentActiveRoom) {
         setMessages((prev) => {
@@ -862,7 +994,7 @@ function App() {
         if (msg.sender_id !== currentUser.tag) {
           socket.emit('msg_seen', {
             message_id: msg.id,
-            room_tag: activeTag,
+            room_tag: activeTagRef.current,
             user_id: currentUser.tag,
           });
         }
@@ -894,7 +1026,7 @@ function App() {
     });
 
     socket.on('messages_seen', (data: { room_tag: string; user_id: string; message_ids: string[] }) => {
-      if (data.room_tag === activeTag) {
+      if (data.room_tag === activeTagRef.current) {
         setMessages((prev) =>
           prev.map((msg) =>
             data.message_ids.includes(msg.id) ? { ...msg, status: 'seen' as const } : msg
@@ -952,9 +1084,9 @@ function App() {
       setDirectMessages(filtered);
       
       // Mark received DMs as seen
-      if (activeDirectUser) {
+      if (activeDirectUserRef.current) {
         socket.emit('direct_msg_seen', {
-          sender_tag: activeDirectUser.tag,
+          sender_tag: activeDirectUserRef.current.tag,
           receiver_tag: currentUser.tag,
         });
       }
@@ -970,7 +1102,7 @@ function App() {
         [msg.sender_tag]: msg.timestamp,
       }));
 
-      const isCurrentActiveDM = activeDirectUser && msg.sender_tag === activeDirectUser.tag;
+      const isCurrentActiveDM = activeDirectUserRef.current && msg.sender_tag === activeDirectUserRef.current.tag;
 
       if (isCurrentActiveDM) {
         setDirectMessages((prev) => {
@@ -1015,7 +1147,7 @@ function App() {
       const finalStatus = statusUpdatesRef.current[msg.id] || msg.status;
       const finalMsg = { ...msg, status: finalStatus };
 
-      if (activeDirectUser && msg.receiver_tag === activeDirectUser.tag) {
+      if (activeDirectUserRef.current && msg.receiver_tag === activeDirectUserRef.current.tag) {
         setDirectMessages((prev) => {
           if (prev.some(d => d.id === msg.id)) return prev;
           return [...prev, finalMsg];
@@ -1041,7 +1173,7 @@ function App() {
         statusUpdatesRef.current[id] = 'seen';
       });
 
-      if (activeDirectUser && data.sender_tag === currentUser.tag && data.receiver_tag === activeDirectUser.tag) {
+      if (activeDirectUserRef.current && data.sender_tag === currentUser.tag && data.receiver_tag === activeDirectUserRef.current.tag) {
         setDirectMessages((prev) =>
           prev.map((msg) =>
             data.message_ids.includes(msg.id) ? { ...msg, status: 'seen' as const } : msg
@@ -1069,7 +1201,6 @@ function App() {
       });
     });
 
-    // E. Voice Call Signaling Listeners
     socket.on('incoming_call', (data: { caller_tag: string; caller_name: string; caller_avatar: string; offer: any }) => {
       // Guard against blocked users
       const blockedList = JSON.parse(localStorage.getItem(`${currentUser?.tag}_blocked_users`) || '[]');
@@ -1077,7 +1208,7 @@ function App() {
         socket.emit('reject_call', { caller_tag: data.caller_tag });
         return;
       }
-      if (callStateRef.current !== 'idle') {
+      if (callStateRef.current !== 'idle' && !autoAcceptRef.current) {
         socket.emit('reject_call', { caller_tag: data.caller_tag });
         return;
       }
@@ -1094,8 +1225,17 @@ function App() {
       triggerNotification(
         `📞 Incoming Call from ${data.caller_name}`,
         `@${data.caller_tag} is calling you...`,
-        'antigravity-call'
+        'antigravity-call',
+        { caller_tag: data.caller_tag }
       );
+
+      // Auto-accept if flagged from native notification action click
+      if (autoAcceptRef.current) {
+        autoAcceptRef.current = false;
+        setTimeout(() => {
+          acceptCall(data.caller_tag);
+        }, 100);
+      }
     });
 
     socket.on('call_accepted', async (data: { receiver_tag: string; answer: any }) => {
@@ -1167,7 +1307,7 @@ function App() {
       socket.off('ice_candidate');
       clearInterval(statusInterval);
     };
-  }, [currentUser, activeTag, activeDirectUser]);
+  }, [currentUser]);
 
   // Join Group Channel Room when active tag changes
   useEffect(() => {
